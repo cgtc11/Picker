@@ -48,5 +48,7 @@
 <br>
 ・画像をドラッグ＆ドロップで読み込み、設定ファイルは画像と同名なら自動で読み込まれる<br>
 ・複数起動可<br>
+<br>
+見栄え良くしたいなら画像でやるべし！！（小さい方が邪魔にならないとかも）<br>
 <img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerPlayer.png" /><br>
 <br>

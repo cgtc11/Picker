@@ -19,10 +19,10 @@ class PickerCanvas(QtWidgets.QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.registered_items = []
-        self.selected_index = -1 
+        self.selected_indices = set()  # 複数選択のためにsetで管理
         self.setMouseTracking(True)
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
-        self.setText("Drop Picker File")
+        self.setText("Drop Picker File (Image/JSON)")
         self.setStyleSheet("color: #888; background-color: #1a1a1a; border: None;")
         self.setContentsMargins(0, 0, 0, 0)
 
@@ -30,39 +30,60 @@ class PickerCanvas(QtWidgets.QLabel):
         super().paintEvent(event)
         if not self.pixmap(): return
         painter = QtGui.QPainter(self)
-        # 高品質な描画設定
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         
         for i, item in enumerate(self.registered_items):
-            # 選択中の枠を太く (4px)、それ以外を (1px)
-            pen_width = 4 if i == self.selected_index else 1
-            painter.setPen(QtGui.QPen(item.color, pen_width))
+            # 選択中のインデックスに含まれていれば太枠 (4px)
+            is_selected = i in self.selected_indices
+            pen_width = 4 if is_selected else 1
+            
+            # 選択時は少し明るくするか、そのままの色で太くする
+            color = item.color
+            painter.setPen(QtGui.QPen(color, pen_width))
             painter.drawRect(item.rect)
 
     def mousePressEvent(self, event):
         pos = event.position().toPoint()
-        hit = False
         
+        # 修飾キーの取得 (Ctrlキーが押されているか)
+        modifiers = QtWidgets.QApplication.keyboardModifiers()
+        is_ctrl = modifiers == QtCore.Qt.KeyboardModifier.ControlModifier
+        
+        hit_index = -1
         for i, region in enumerate(self.registered_items):
             if region.rect.contains(pos):
-                hit = True
-                self.selected_index = i
-                self.update() 
-                
-                # Max上のノードを選択
-                nodes = [mxs.getNodeByName(name) for name in region.names]
-                valid_nodes = [n for n in nodes if n]
-                if valid_nodes: 
-                    mxs.select(valid_nodes)
-                else:
-                    # ノードが見つからない場合は選択解除（任意）
-                    mxs.deselect(mxs.selection)
+                hit_index = i
                 break
 
-        if not hit:
-            self.selected_index = -1
-            mxs.deselect(mxs.selection)
-            self.update()
+        if hit_index != -1:
+            region = self.registered_items[hit_index]
+            nodes = [mxs.getNodeByName(name) for name in region.names]
+            valid_nodes = [n for n in nodes if n]
+
+            if is_ctrl:
+                # --- Ctrl+クリック: トグル動作 (追加/解除) ---
+                if hit_index in self.selected_indices:
+                    self.selected_indices.remove(hit_index)
+                    if valid_nodes:
+                        mxs.deselect(valid_nodes)
+                else:
+                    self.selected_indices.add(hit_index)
+                    if valid_nodes:
+                        mxs.selectMore(valid_nodes) # 既存の選択に追加
+            else:
+                # --- 通常クリック: 単一選択 ---
+                self.selected_indices = {hit_index}
+                if valid_nodes:
+                    mxs.select(valid_nodes)
+                else:
+                    mxs.deselect(mxs.selection)
+        else:
+            # 何もないところをクリックした場合
+            if not is_ctrl:
+                self.selected_indices.clear()
+                mxs.deselect(mxs.selection)
+
+        self.update()
 
 class PickerPlayer(QtWidgets.QWidget):
     def __init__(self, parent=None):
@@ -109,15 +130,13 @@ class PickerPlayer(QtWidgets.QWidget):
 
     def load_json(self, path):
         try:
-            # エディタ側の出力に合わせてUTF-8指定で読み込み
             with open(path, 'r', encoding='utf-8') as f: 
                 data = json.load(f)
             
             self.canvas.registered_items = []
-            self.canvas.selected_index = -1 
+            self.canvas.selected_indices.clear() 
             
             for d in data:
-                # エディタ側のキー名称（names, rect, color）に準拠
                 names = d.get("names", [d.get("name", "Unknown")])
                 rect_data = d.get("rect")
                 color_data = d.get("color")
@@ -132,9 +151,9 @@ class PickerPlayer(QtWidgets.QWidget):
 
 # --- 実行セクション ---
 if __name__ == "__main__":
-    # 既存の同名ウィンドウを安全に破棄（二重起動防止）
+    # 既存のウィンドウを破棄
     for w in QtWidgets.QApplication.allWidgets():
-        if w.windowTitle().startswith("Picker Player - Max") or w.windowTitle().startswith("Picker:"):
+        if isinstance(w, PickerPlayer):
             w.close()
             w.deleteLater()
             

@@ -36,6 +36,7 @@
 　中は開けば解るような単純なものなので、テキストベースで編集可能<br>
 　画像と同じ名前で同じフォルダ内に保存しておくと画像読込時に同時に開きます<br>
 <br>
+MAX版、Maya版、Blender版の見た目と使い方はほぼ同じ<br>
 <img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor.png" /><br>
 <br>
 ■ PickerPlayer<br>

@@ -9,7 +9,7 @@
   <p><strong>目的:</strong> 3dsMAXで使用可能なセット</p><br>
 
   <h2 id="Maya版 ピッカー">
-  <a [href="https://github.com/cgtc11/Picker/tree/main/Maya">Maya版</a>
+  <a href="https://github.com/cgtc11/Picker/tree/main/Maya">Maya版</a>
 　</h2>
   <p><strong>目的:</strong> Mayaで使用可能なセット</p><br>
 

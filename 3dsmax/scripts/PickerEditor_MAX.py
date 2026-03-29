@@ -4,9 +4,9 @@ import os
 from PySide6 import QtWidgets, QtCore, QtGui
 from pymxs import runtime as mxs
 
-# --- スタイル設定 (色だけをMaya風に) ---
+# --- スタイル設定 (Maya/Max風のダークテーマ) ---
 STYLESHEET = """
-    QWidget { background-color: #2b2b2b; color: #dcdcdc; font-family: 'Segoe UI', sans-serif; }
+    QWidget { background-color: #2b2b2b; color: #dcdcdc; font-family: 'Segoe UI', sans-serif; font-size: 12px; }
     QGroupBox { border: 1px solid #3a3a3a; margin-top: 15px; padding-top: 10px; font-weight: bold; }
     QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 0 5px; color: #aaaaaa; }
     QPushButton { background-color: #3f3f3f; border: 1px solid #555; border-radius: 3px; padding: 3px; color: #ffffff; }
@@ -20,26 +20,33 @@ STYLESHEET = """
     QLabel { background-color: transparent; color: #aaaaaa; }
 """
 
-class ClickRegion:
-    def __init__(self, names, rect_data, color):
-        self.names = names if isinstance(names, list) else [names]
-        self.rect = QtCore.QRect(*rect_data)
-        self.color = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
-
 class MaxStyleSpinBox(QtWidgets.QSpinBox):
+    """数値入力に特化したスピンボックス"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        self.setRange(-5000, 5000)
+        self.setRange(-10000, 10000)
         self.setFixedWidth(45)
-        self.lineEdit().setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setCursor(QtCore.Qt.CursorShape.SizeHorCursor)
+        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+    def mouseReleaseEvent(self, event):
+        # クリックして離した瞬間に全選択状態にする（即上書き可能）
+        self.selectAll()
+        super().mouseReleaseEvent(event)
+
+class DraggableLabel(QtWidgets.QLabel):
+    """ラベルをドラッグして数値を変えるクラス"""
+    def __init__(self, text, spinbox, parent=None):
+        super().__init__(text, parent)
+        self.spinbox = spinbox
+        self.setFixedWidth(15)
+        self.setCursor(QtCore.Qt.CursorShape.SizeHorCursor) # 左右矢印カーソル
         self.last_mouse_pos = None
+        self.setStyleSheet("color: #aaaaaa; font-weight: bold;")
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self.last_mouse_pos = event.globalPosition().toPoint()
-            self.setFocus()
             event.accept()
 
     def mouseMoveEvent(self, event):
@@ -47,15 +54,13 @@ class MaxStyleSpinBox(QtWidgets.QSpinBox):
             curr_pos = event.globalPosition().toPoint()
             delta = curr_pos.x() - self.last_mouse_pos.x()
             if delta != 0:
-                self.setValue(self.value() + delta)
+                # 紐付いたスピンボックスの値を更新
+                self.spinbox.setValue(self.spinbox.value() + delta)
                 self.last_mouse_pos = curr_pos
                 event.accept()
-                return
-        super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         self.last_mouse_pos = None
-        super().mouseReleaseEvent(event)
 
 class ListColorItem(QtWidgets.QWidget):
     color_changed = QtCore.Signal(int, QtGui.QColor)
@@ -67,35 +72,39 @@ class ListColorItem(QtWidgets.QWidget):
         self.index = index
         self.block_signals = False
         layout = QtWidgets.QHBoxLayout(self)
-        layout.addSpacing(10)
         layout.setContentsMargins(5, 2, 5, 2)
-        layout.setSpacing(8)
+        layout.setSpacing(5)
         
         self.names_edit = QtWidgets.QLineEdit(", ".join(names))
-        self.names_edit.setMinimumWidth(150)
+        self.names_edit.setMinimumWidth(120)
         self.names_edit.editingFinished.connect(self.on_names_ui_changed)
         layout.addWidget(self.names_edit)
         
         self.spins = {}
         for label_text, key in [("X", "x"), ("Y", "y"), ("W", "w"), ("H", "h")]:
-            lbl = QtWidgets.QLabel(label_text); lbl.setFixedWidth(12)
-            layout.addWidget(lbl)
             sb = MaxStyleSpinBox()
             sb.valueChanged.connect(self.on_rect_ui_changed)
+            
+            # X, Y, W, H の文字部分をドラッグ可能ラベルにする
+            lbl = DraggableLabel(label_text, sb)
+            
+            layout.addWidget(lbl)
             layout.addWidget(sb)
             self.spins[key] = sb
             
         self.update_spins(rect)
         self.color_btn = QtWidgets.QPushButton("■")
-        self.color_btn.setFixedSize(25, 22)
+        self.color_btn.setFixedSize(22, 22)
         self.set_btn_color(color)
         self.color_btn.clicked.connect(self.pick_new_color)
         layout.addWidget(self.color_btn)
 
     def update_spins(self, rect):
         self.block_signals = True
-        self.spins["x"].setValue(rect.x()); self.spins["y"].setValue(rect.y())
-        self.spins["w"].setValue(rect.width()); self.spins["h"].setValue(rect.height())
+        self.spins["x"].setValue(rect.x())
+        self.spins["y"].setValue(rect.y())
+        self.spins["w"].setValue(rect.width())
+        self.spins["h"].setValue(rect.height())
         self.block_signals = False
 
     def on_names_ui_changed(self):
@@ -117,6 +126,12 @@ class ListColorItem(QtWidgets.QWidget):
             self.set_btn_color(new_color)
             self.color_changed.emit(self.index, new_color)
 
+class ClickRegion:
+    def __init__(self, names, rect_data, color):
+        self.names = names if isinstance(names, list) else [names]
+        self.rect = QtCore.QRect(*rect_data)
+        self.color = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
+
 class ImageCanvas(QtWidgets.QLabel):
     request_deselect = QtCore.Signal(); region_clicked = QtCore.Signal(int) 
 
@@ -132,7 +147,6 @@ class ImageCanvas(QtWidgets.QLabel):
         super().paintEvent(event)
         painter = QtGui.QPainter(self)
         for i, item in enumerate(self.registered_items):
-            # --- 修正箇所：不要な単語を削除 ---
             pen_width = 4 if i == self.selected_index else 1
             painter.setPen(QtGui.QPen(item.color, pen_width))
             painter.drawRect(item.rect)

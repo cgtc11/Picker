@@ -6,7 +6,7 @@
   <h2 id="3dsMAX版 ピッカー">
   <a href="https://github.com/cgtc11/Picker/tree/main/3dsmax">3dsMAX版</a>
 　</h2>
-  <p><strong>目的:</strong> <code>3dsMAX版 ピッカー</code> 3dsMAXで使用可能</p><br>
+  <p><strong>目的:</strong> 3dsMAXで使用可能なセット</p><br>
 <br>
 ■ PickerEditor<br>
 ・任意の画像をドラッグ＆ドロップで読み込み、その上に好きな場所にマウス左ドラッグで四角を作成<br>

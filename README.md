@@ -19,8 +19,8 @@
   <p><strong>目的:</strong> Blenderで使用可能なセット</p><br>
 <br>
 ■ PickerEditor<br>
-<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor_MAX.png" /><br>
 <br>
+<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor_MAX.png" /><br>
 １．ピッカーとして使う画像を用意（ここが肝心でここが全て）<br>
 <br>
 ２．作業画面にドラッグ＆ドロップで画像を読み込み<br>

@@ -17,7 +17,10 @@
   <a href="https://github.com/cgtc11/Picker/tree/main/Blender">Blender版 Download</a>
 　</h2>
   <p><strong>目的:</strong> Blenderで使用可能なセット</p><br>
-
+<br>
+<br>
+<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor_MAX.png" /><br>
+<br>
 ■ PickerEditor<br>
 １．ピッカーとして使う画像を用意（ここが肝心でここが全て）<br>
 <br>

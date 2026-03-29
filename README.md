@@ -20,12 +20,12 @@
 <br>
 ■ PickerEditor<br>
 <br>
-<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor_MAX.png" /><br>
 １．ピッカーとして使う画像を用意（ここが肝心でここが全て）<br>
 <br>
 ２．作業画面にドラッグ＆ドロップで画像を読み込み<br>
 　クリックすると反応の欲しい場所をマウス左ドラッグで囲い作成<br>
-<br>
+ <br>
+<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor_MAX.png" /><br>
 　右にリストが作成されるので、囲った場所が気に入らない場合は数値を変更して微調整<br>
 　位置とサイズ、色を後から変更可<br>
 <br>

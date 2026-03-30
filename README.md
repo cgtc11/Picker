@@ -16,7 +16,7 @@
   <h2 id="Blender版 ピッカー">
   <a href="https://github.com/cgtc11/Picker/tree/main/Blender">Blender版 Download</a>
 　</h2>
-  <p><strong>目的:</strong> BlenderV5.1以降で使用可能なセット</p><br>
+  <p><strong>目的:</strong> Blender5.1以降で使用可能なセット</p><br>
 <br>
 ■ PickerEditor<br>
 <br>

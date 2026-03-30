@@ -6,10 +6,8 @@ from pymxs import runtime as mxs
 
 class ClickRegion:
     def __init__(self, names, rect_data, color):
-        # namesが単一文字列の場合もリストとして扱う
         self.names = names if isinstance(names, list) else [names]
         self.rect = QtCore.QRect(*rect_data)
-        # リスト(RGBA)でもQColorオブジェクトでも柔軟に受け取る
         if isinstance(color, list):
             self.color = QtGui.QColor(*color)
         else:
@@ -19,79 +17,118 @@ class PickerCanvas(QtWidgets.QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.registered_items = []
-        self.selected_indices = set()  # 複数選択のためにsetで管理
+        self.selected_indices = set()
+        
+        # ドラッグ選択用の管理変数
+        self.origin = QtCore.QPoint()
+        self.selection_rect = QtCore.QRect()
+        self.is_dragging = False
+        
         self.setMouseTracking(True)
-        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
-        self.setText("Drop Picker File (Image/JSON)")
+        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.setText("Drop Picker File")
         self.setStyleSheet("color: #888; background-color: #1a1a1a; border: None;")
         self.setContentsMargins(0, 0, 0, 0)
 
     def paintEvent(self, event):
         super().paintEvent(event)
         if not self.pixmap(): return
+        
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         
         for i, item in enumerate(self.registered_items):
-            # 選択中のインデックスに含まれていれば太枠 (4px)
             is_selected = i in self.selected_indices
             pen_width = 4 if is_selected else 1
-            
-            # 選択時は少し明るくするか、そのままの色で太くする
             color = item.color
             painter.setPen(QtGui.QPen(color, pen_width))
             painter.drawRect(item.rect)
 
+        if self.is_dragging and not self.selection_rect.isNull():
+            painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.white, 1, QtCore.Qt.PenStyle.DashLine))
+            painter.setBrush(QtGui.QColor(255, 255, 255, 40))
+            painter.drawRect(self.selection_rect)
+
     def mousePressEvent(self, event):
-        pos = event.position().toPoint()
-        
-        # 修飾キーの取得 (Ctrlキーが押されているか)
-        modifiers = QtWidgets.QApplication.keyboardModifiers()
-        is_ctrl = modifiers == QtCore.Qt.KeyboardModifier.ControlModifier
-        
-        hit_index = -1
-        for i, region in enumerate(self.registered_items):
-            if region.rect.contains(pos):
-                hit_index = i
-                break
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.origin = event.position().toPoint()
+            self.selection_rect = QtCore.QRect(self.origin, QtCore.QSize())
+            self.is_dragging = False
 
-        if hit_index != -1:
-            region = self.registered_items[hit_index]
-            nodes = [mxs.getNodeByName(name) for name in region.names]
-            valid_nodes = [n for n in nodes if n]
+    def mouseMoveEvent(self, event):
+        if event.buttons() & QtCore.Qt.MouseButton.LeftButton:
+            if (event.position().toPoint() - self.origin).manhattanLength() > 5:
+                self.is_dragging = True
+            
+            if self.is_dragging:
+                self.selection_rect = QtCore.QRect(self.origin, event.position().toPoint()).normalized()
+                self.update()
 
-            if is_ctrl:
-                # --- Ctrl+クリック: トグル動作 (追加/解除) ---
-                if hit_index in self.selected_indices:
-                    self.selected_indices.remove(hit_index)
-                    if valid_nodes:
-                        mxs.deselect(valid_nodes)
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            modifiers = QtWidgets.QApplication.keyboardModifiers()
+            is_ctrl = modifiers == QtCore.Qt.KeyboardModifier.ControlModifier
+            
+            if self.is_dragging:
+                new_selections = set()
+                for i, item in enumerate(self.registered_items):
+                    if self.selection_rect.intersects(item.rect):
+                        new_selections.add(i)
+                
+                if is_ctrl:
+                    self.selected_indices |= new_selections
                 else:
-                    self.selected_indices.add(hit_index)
-                    if valid_nodes:
-                        mxs.selectMore(valid_nodes) # 既存の選択に追加
+                    self.selected_indices = new_selections
+                
+                self._update_max_selection(is_ctrl)
             else:
-                # --- 通常クリック: 単一選択 ---
-                self.selected_indices = {hit_index}
-                if valid_nodes:
-                    mxs.select(valid_nodes)
-                else:
-                    mxs.deselect(mxs.selection)
-        else:
-            # 何もないところをクリックした場合
-            if not is_ctrl:
-                self.selected_indices.clear()
-                mxs.deselect(mxs.selection)
+                pos = self.origin
+                hit_index = -1
+                for i, region in enumerate(self.registered_items):
+                    if region.rect.contains(pos):
+                        hit_index = i
+                        break
 
-        self.update()
+                if hit_index != -1:
+                    if is_ctrl:
+                        if hit_index in self.selected_indices:
+                            self.selected_indices.remove(hit_index)
+                        else:
+                            self.selected_indices.add(hit_index)
+                    else:
+                        self.selected_indices = {hit_index}
+                    self._update_max_selection(is_ctrl)
+                else:
+                    if not is_ctrl:
+                        self.selected_indices.clear()
+                        mxs.deselect(mxs.selection)
+
+            self.is_dragging = False
+            self.selection_rect = QtCore.QRect()
+            self.update()
+
+    def _update_max_selection(self, is_ctrl):
+        nodes_to_select = []
+        for idx in self.selected_indices:
+            region = self.registered_items[idx]
+            nodes = [mxs.getNodeByName(name) for name in region.names]
+            nodes_to_select.extend([n for n in nodes if n])
+
+        if nodes_to_select:
+            if is_ctrl:
+                mxs.selectMore(nodes_to_select)
+            else:
+                mxs.select(nodes_to_select)
+        else:
+            if not is_ctrl:
+                mxs.deselect(mxs.selection)
 
 class PickerPlayer(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Picker Player - Max")
+        self.setWindowTitle("Picker")
         self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.WindowStaysOnTopHint)
         self.setAcceptDrops(True)
-        self.resize(300, 300)
 
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
@@ -99,6 +136,9 @@ class PickerPlayer(QtWidgets.QWidget):
 
         self.canvas = PickerCanvas()
         self.main_layout.addWidget(self.canvas)
+        
+        # 初期状態を極小に固定（テキストの長さに合わせる）
+        self.setFixedSize(150, 30)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls(): event.acceptProposedAction()
@@ -118,10 +158,13 @@ class PickerPlayer(QtWidgets.QWidget):
                 self.setWindowTitle(f"Picker: {os.path.basename(path)}")
                 self.canvas.setText("")
                 self.canvas.setPixmap(pix)
+                
+                # 画像読み込み時に固定サイズを解除して画像サイズで再固定
+                self.setMinimumSize(0, 0)
+                self.setMaximumSize(16777215, 16777215)
                 self.canvas.setFixedSize(pix.size())
                 self.setFixedSize(pix.size())
                 
-                # 画像と同名のJSONを自動検索
                 json_path = os.path.splitext(path)[0] + ".json"
                 if os.path.exists(json_path): 
                     self.load_json(json_path)
@@ -149,9 +192,7 @@ class PickerPlayer(QtWidgets.QWidget):
         except Exception as e: 
             print(f"Load Error: {e}")
 
-# --- 実行セクション ---
 if __name__ == "__main__":
-    # 既存のウィンドウを破棄
     for w in QtWidgets.QApplication.allWidgets():
         if isinstance(w, PickerPlayer):
             w.close()

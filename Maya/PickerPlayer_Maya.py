@@ -22,8 +22,14 @@ class PickerCanvas(QtWidgets.QLabel):
         super().__init__(parent)
         self.registered_items = []
         self.selected_indices = set()  # 複数選択の状態を保持
+        
+        # ドラッグ選択用の管理変数
+        self.origin = QtCore.QPoint()
+        self.selection_rect = QtCore.QRect()
+        self.is_dragging = False
+        
         self.setMouseTracking(True)
-        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
+        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.setText("Drop Image or JSON here")
         self.setStyleSheet("color: #888; background-color: #1a1a1a; border: None;")
         self.setContentsMargins(0, 0, 0, 0)
@@ -31,57 +37,101 @@ class PickerCanvas(QtWidgets.QLabel):
     def paintEvent(self, event):
         super().paintEvent(event)
         if not self.pixmap(): return
+        
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         
+        # 登録アイテム（枠）の描画
         for i, item in enumerate(self.registered_items):
-            # 選択中のインデックスに含まれていれば太枠 (4px)
             is_selected = i in self.selected_indices
             pen_width = 4 if is_selected else 1
             painter.setPen(QtGui.QPen(item.color, pen_width))
             painter.drawRect(item.rect)
 
+        # ドラッグ中の選択範囲枠（点線）を表示
+        if self.is_dragging and not self.selection_rect.isNull():
+            painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.white, 1, QtCore.Qt.PenStyle.DashLine))
+            painter.setBrush(QtGui.QColor(255, 255, 255, 40))
+            painter.drawRect(self.selection_rect)
+
     def mousePressEvent(self, event):
-        pos = event.position().toPoint()
-        
-        # Mayaの流儀に合わせてShiftキーを判定（Ctrlに変更も可能）
-        modifiers = QtWidgets.QApplication.keyboardModifiers()
-        is_shift = (modifiers == QtCore.Qt.KeyboardModifier.ShiftModifier)
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.origin = event.position().toPoint()
+            self.selection_rect = QtCore.QRect(self.origin, QtCore.QSize())
+            self.is_dragging = False
 
-        hit_index = -1
-        for i, region in enumerate(self.registered_items):
-            if region.rect.contains(pos):
-                hit_index = i
-                break
+    def mouseMoveEvent(self, event):
+        if event.buttons() & QtCore.Qt.MouseButton.LeftButton:
+            # 5ピクセル以上の移動でドラッグ開始と判定
+            if (event.position().toPoint() - self.origin).manhattanLength() > 5:
+                self.is_dragging = True
+            
+            if self.is_dragging:
+                self.selection_rect = QtCore.QRect(self.origin, event.position().toPoint()).normalized()
+                self.update()
 
-        if hit_index != -1:
-            region = self.registered_items[hit_index]
-            valid_nodes = [n for n in region.names if cmds.objExists(n)]
-
-            if is_shift:
-                # --- Shift+クリック: トグル動作 (追加/解除) ---
-                if hit_index in self.selected_indices:
-                    self.selected_indices.remove(hit_index)
-                    if valid_nodes:
-                        cmds.select(valid_nodes, deselect=True)
+    def mouseReleaseEvent(self, event):
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            modifiers = QtWidgets.QApplication.keyboardModifiers()
+            is_shift = (modifiers == QtCore.Qt.KeyboardModifier.ShiftModifier)
+            
+            if self.is_dragging:
+                # --- ドラッグによる範囲選択 ---
+                new_selections = set()
+                for i, item in enumerate(self.registered_items):
+                    # 範囲と交差するアイテムを抽出
+                    if self.selection_rect.intersects(item.rect):
+                        new_selections.add(i)
+                
+                if is_shift:
+                    self.selected_indices |= new_selections
                 else:
-                    self.selected_indices.add(hit_index)
-                    if valid_nodes:
-                        cmds.select(valid_nodes, add=True)
+                    self.selected_indices = new_selections
+                
+                self._update_maya_selection(is_shift)
             else:
-                # --- 通常クリック: 単一選択 ---
-                self.selected_indices = {hit_index}
-                if valid_nodes:
-                    cmds.select(valid_nodes, replace=True)
-                else:
-                    cmds.select(clear=True)
-        else:
-            # 何もないところをクリック
-            if not is_shift:
-                self.selected_indices.clear()
-                cmds.select(clear=True)
+                # --- 通常のクリック処理 ---
+                pos = self.origin
+                hit_index = -1
+                for i, region in enumerate(self.registered_items):
+                    if region.rect.contains(pos):
+                        hit_index = i
+                        break
 
-        self.update()
+                if hit_index != -1:
+                    if is_shift:
+                        if hit_index in self.selected_indices:
+                            self.selected_indices.remove(hit_index)
+                        else:
+                            self.selected_indices.add(hit_index)
+                    else:
+                        self.selected_indices = {hit_index}
+                    self._update_maya_selection(is_shift)
+                else:
+                    if not is_shift:
+                        self.selected_indices.clear()
+                        cmds.select(clear=True)
+
+            self.is_dragging = False
+            self.selection_rect = QtCore.QRect()
+            self.update()
+
+    def _update_maya_selection(self, is_shift):
+        """現在の選択インデックスに基づいてMayaの選択状態を更新"""
+        nodes_to_select = []
+        for idx in self.selected_indices:
+            region = self.registered_items[idx]
+            valid_nodes = [n for n in region.names if cmds.objExists(n)]
+            nodes_to_select.extend(valid_nodes)
+
+        if nodes_to_select:
+            if is_shift:
+                cmds.select(nodes_to_select, add=True)
+            else:
+                cmds.select(nodes_to_select, replace=True)
+        else:
+            if not is_shift:
+                cmds.select(clear=True)
 
 class PickerPlayerMaya(QtWidgets.QWidget):
     def __init__(self, parent=get_maya_main_window()):
@@ -96,6 +146,9 @@ class PickerPlayerMaya(QtWidgets.QWidget):
         
         self.canvas = PickerCanvas()
         self.main_layout.addWidget(self.canvas)
+        
+        # 起動時はコンパクトなサイズに（必要に応じて数値を調整）
+        self.setFixedSize(160, 25)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls(): event.acceptProposedAction()
@@ -115,6 +168,10 @@ class PickerPlayerMaya(QtWidgets.QWidget):
                 self.setWindowTitle(f"Picker: {os.path.basename(path)}")
                 self.canvas.setText("")
                 self.canvas.setPixmap(pix)
+                
+                # 固定解除して画像サイズにリサイズ
+                self.setMinimumSize(0, 0)
+                self.setMaximumSize(16777215, 16777215)
                 self.canvas.setFixedSize(pix.size())
                 self.setFixedSize(pix.size())
                 
@@ -147,9 +204,12 @@ if __name__ == "__main__":
     win_title_main = "Maya Picker"
     
     for w in QtWidgets.QApplication.topLevelWidgets():
-        if w.windowTitle().startswith(win_title_prefix) or w.windowTitle() == win_title_main:
-            w.close()
-            w.deleteLater()
+        try:
+            if w.windowTitle().startswith(win_title_prefix) or w.windowTitle() == win_title_main:
+                w.close()
+                w.deleteLater()
+        except:
+            pass
             
     maya_picker_ui = PickerPlayerMaya()
     maya_picker_ui.show()

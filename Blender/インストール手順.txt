@@ -16,7 +16,10 @@ subprocess.check_call([python_exe, "-m", "pip", "install", "PySide6"])
 print("PySide6 のインストールが完了しました。")
 
 #ここまでを貼り付けて再生
+インストールは少し時間かかります（1分くらい）
 以上で PySide6 がインストールされます
+
+★Blenderを通常に起動
 
 編集＞プリファレンス＞アドオン　右上にある▽からディスクからインストール
 custom_picker_tool.zip を選択するとインストール開始

@@ -70,9 +70,7 @@ class ListColorItem(QtWidgets.QWidget):
         self.index = index
         self.block_signals = False
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0, 2, 5, 2)
-        layout.setSpacing(5)
-        layout.addSpacing(40) 
+        layout.setContentsMargins(0, 2, 5, 2); layout.setSpacing(5); layout.addSpacing(40) 
         
         self.names_edit = QtWidgets.QLineEdit(", ".join(names))
         self.names_edit.setMinimumWidth(120)
@@ -113,8 +111,7 @@ class ListColorItem(QtWidgets.QWidget):
 
     def pick_new_color(self):
         c = QtWidgets.QColorDialog.getColor(self.current_color, self)
-        if c.isValid():
-            self.color_changed.emit(self.index, c)
+        if c.isValid(): self.color_changed.emit(self.index, c)
 
     def set_edit_enabled(self, enabled):
         self.names_edit.setEnabled(enabled); self.color_btn.setEnabled(enabled)
@@ -127,12 +124,13 @@ class ClickRegion:
         self.color = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
 
 class ImageCanvas(QtWidgets.QLabel):
-    request_deselect = QtCore.Signal(); region_clicked = QtCore.Signal(int)
+    request_deselect = QtCore.Signal(bool) # is_modifier_pressed
+    region_clicked = QtCore.Signal(int, bool) # index, is_modifier_pressed
     pan_requested = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, parent=None):
         super().__init__(parent); self.start_pos = None; self.temp_rect = QtCore.QRect()
-        self.registered_items = []; self.mode = "setup"; self.selected_index = -1
+        self.registered_items = []; self.mode = "setup"; self.selected_indices = set()
         self.scale = 1.0; self.pixmap_original = None; self.last_pan_pos = None
         
         self.setMouseTracking(True)
@@ -150,13 +148,11 @@ class ImageCanvas(QtWidgets.QLabel):
 
     def wheelEvent(self, event):
         if not self.pixmap_original: return
-        delta = event.angleDelta().y()
-        old_scale = self.scale
+        delta = event.angleDelta().y(); old_scale = self.scale
         if delta > 0: self.scale *= 1.1
         else: self.scale /= 1.1
         self.scale = max(0.1, min(self.scale, 10.0))
-        if old_scale != self.scale:
-            self.update_canvas_size(); self.update()
+        if old_scale != self.scale: self.update_canvas_size(); self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event); painter = QtGui.QPainter(self)
@@ -165,31 +161,38 @@ class ImageCanvas(QtWidgets.QLabel):
                 item.rect.x() * self.scale, item.rect.y() * self.scale,
                 item.rect.width() * self.scale, item.rect.height() * self.scale
             )
-            painter.setPen(QtGui.QPen(item.color, 4 if i == self.selected_index else 1))
+            is_sel = i in self.selected_indices
+            painter.setPen(QtGui.QPen(item.color, 4 if is_sel else 1))
             painter.drawRect(scaled_rect)
         if self.mode == "setup" and not self.temp_rect.isNull():
             painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.red, 2, QtCore.Qt.PenStyle.DashLine))
             painter.drawRect(self.temp_rect)
 
     def mousePressEvent(self, event):
+        modifiers = event.modifiers()
+        is_mod = bool(modifiers & (QtCore.Qt.KeyboardModifier.ControlModifier | QtCore.Qt.KeyboardModifier.ShiftModifier))
+
         if event.button() == QtCore.Qt.MouseButton.MiddleButton or \
-           (event.button() == QtCore.Qt.MouseButton.LeftButton and event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier):
+           (event.button() == QtCore.Qt.MouseButton.LeftButton and modifiers & QtCore.Qt.KeyboardModifier.AltModifier):
             self.last_pan_pos = event.globalPosition().toPoint()
             self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
             return
 
-        pos = event.position().toPoint(); raw_pos = pos / self.scale; hit = False
+        pos = event.position().toPoint(); raw_pos = pos / self.scale; hit_idx = -1
         for i, reg in enumerate(self.registered_items):
-            if reg.rect.contains(raw_pos):
-                hit = True; self.region_clicked.emit(i)
-                if self.mode == "selector":
-                    nodes = [mxs.getNodeByName(n) for n in reg.names if mxs.getNodeByName(n)]
-                    if nodes: mxs.select(nodes)
-                break
-        if not hit:
+            if reg.rect.contains(raw_pos): hit_idx = i; break
+            
+        if hit_idx != -1:
+            self.region_clicked.emit(hit_idx, is_mod)
+            if self.mode == "selector":
+                nodes = [mxs.getNodeByName(n) for n in self.registered_items[hit_idx].names if mxs.getNodeByName(n)]
+                if nodes:
+                    if is_mod: mxs.selectMore(nodes)
+                    else: mxs.select(nodes)
+        else:
             self.start_pos = pos if self.mode == "setup" else None
-            self.request_deselect.emit()
-            if self.mode == "selector": mxs.select(mxs.EMPTY_ARRAY)
+            self.request_deselect.emit(is_mod)
+            if self.mode == "selector" and not is_mod: mxs.select(mxs.EMPTY_ARRAY)
 
     def mouseMoveEvent(self, event):
         if self.last_pan_pos:
@@ -228,7 +231,8 @@ class PickerEditor(QtWidgets.QWidget):
 
         self.list_widget = QtWidgets.QListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.list_widget.currentRowChanged.connect(self.sync_canvas); setup_v.addWidget(self.list_widget)
+        self.list_widget.itemSelectionChanged.connect(self.sync_selection_to_canvas)
+        setup_v.addWidget(self.list_widget)
 
         get_h = QtWidgets.QHBoxLayout(); self.edit_names = QtWidgets.QLineEdit()
         btn_get = QtWidgets.QPushButton("Get Selected"); btn_get.clicked.connect(lambda: self.edit_names.setText(", ".join([o.name for o in list(mxs.selection)])))
@@ -241,20 +245,36 @@ class PickerEditor(QtWidgets.QWidget):
         file_h = QtWidgets.QHBoxLayout(); btn_save = QtWidgets.QPushButton("Save JSON"); btn_load = QtWidgets.QPushButton("Load JSON")
         btn_save.clicked.connect(self.save_json); btn_load.clicked.connect(self.load_json); file_h.addWidget(btn_save); file_h.addWidget(btn_load); right_panel.addLayout(file_h)
 
-        self.splitter.addWidget(left_w); self.splitter.addWidget(right_w)
-        # --- 修正箇所: Blender版に合わせてスプリッターの初期比率を調整 ---
-        self.splitter.setSizes([350, 800])
+        self.splitter.addWidget(left_w); self.splitter.addWidget(right_w); self.splitter.setSizes([350, 800])
         main_v.addWidget(self.splitter)
 
-        self.canvas.request_deselect.connect(lambda: self.list_widget.setCurrentRow(-1))
-        self.canvas.region_clicked.connect(lambda i: self.list_widget.setCurrentRow(i))
+        self.canvas.request_deselect.connect(self.handle_canvas_deselect)
+        self.canvas.region_clicked.connect(self.handle_canvas_region_click)
         self.canvas.pan_requested.connect(self.handle_pan)
+
+    def sync_selection_to_canvas(self):
+        selected_rows = {i.row() for i in self.list_widget.selectedIndexes()}
+        self.canvas.selected_indices = selected_rows
+        self.canvas.update()
+
+    def handle_canvas_region_click(self, row, is_mod):
+        item = self.list_widget.item(row)
+        if not item: return
+        if is_mod:
+            item.setSelected(not item.isSelected())
+        else:
+            self.list_widget.clearSelection()
+            self.list_widget.setCurrentRow(row)
+            item.setSelected(True)
+
+    def handle_canvas_deselect(self, is_mod):
+        if not is_mod:
+            self.list_widget.clearSelection()
+            self.list_widget.setCurrentRow(-1)
 
     def handle_pan(self, delta):
         h = self.scroll.horizontalScrollBar(); v = self.scroll.verticalScrollBar()
         h.setValue(h.value() - delta.x()); v.setValue(v.value() - delta.y())
-
-    def sync_canvas(self, row): self.canvas.selected_index = row; self.canvas.update()
 
     def handle_rect_sync(self, origin_idx, key, value):
         selected_rows = [i.row() for i in self.list_widget.selectedIndexes()]
@@ -312,8 +332,7 @@ class PickerEditor(QtWidgets.QWidget):
         item = QtWidgets.QListWidgetItem(self.list_widget)
         w = ListColorItem(names, rect, color, self.list_widget.count()-1)
         w.names_changed.connect(lambda i, n: setattr(self.canvas.registered_items[i], 'names', n))
-        w.rect_changed.connect(self.handle_rect_sync)
-        w.color_changed.connect(self.handle_color_sync)
+        w.rect_changed.connect(self.handle_rect_sync); w.color_changed.connect(self.handle_color_sync)
         item.setSizeHint(w.sizeHint()); self.list_widget.addItem(item); self.list_widget.setItemWidget(item, w)
 
     def delete_items(self):
@@ -348,8 +367,7 @@ class PickerEditor(QtWidgets.QWidget):
             self.canvas.registered_items = []; self.list_widget.clear()
             for d in data:
                 reg = ClickRegion(d.get("names", [d.get("name", "Unknown")]), d["rect"], d["color"])
-                self.canvas.registered_items.append(reg)
-                self.add_list_item(reg.names, reg.rect, reg.color)
+                self.canvas.registered_items.append(reg); self.add_list_item(reg.names, reg.rect, reg.color)
             self.canvas.update()
 
 if __name__ == "__main__":

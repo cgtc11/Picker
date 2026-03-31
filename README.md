@@ -38,7 +38,7 @@
 　画像と同じ名前で同じフォルダ内に保存しておくと画像読込時に同時に開きます<br>
 <br>
 MAX版、Maya版、Blender版の見た目と使い方はほぼ同じ<br>
-<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor.png" /><br>
+<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor2.png" /><br>
 <br>
 ■ PickerPlayer<br>
 １．起動後、ピッカーとして使用する画像をウィンドウにドラッグ＆ドロップ<br>
@@ -56,5 +56,5 @@ MAX版、Maya版、Blender版の見た目と使い方はほぼ同じ<br>
 ・複数起動可<br>
 <br>
 プレーヤーも同じ見え方です。単純な選択ツールなので、人以外でも対応可<br>
-<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerPlayer.png" /><br>
+<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerPlayer2.png" /><br>
 <br>

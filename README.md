@@ -56,5 +56,5 @@ MAX版、Maya版、Blender版の見た目と使い方はほぼ同じ<br>
 ・複数起動可<br>
 <br>
 プレーヤーも同じ見え方です。単純な選択ツールなので、人以外でも対応可<br>
-<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerPlayer2.png" /><br>
+<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerPlayer3.png" /><br>
 <br>

@@ -130,14 +130,16 @@ class ListColorItem(QtWidgets.QWidget):
         for sb in self.spins.values(): sb.setEnabled(enabled)
 
 class ImageCanvas(QtWidgets.QLabel):
-    request_deselect = QtCore.Signal(); region_clicked = QtCore.Signal(int)
+    request_deselect = QtCore.Signal(bool)
+    region_clicked = QtCore.Signal(int, bool)
     file_dropped = QtCore.Signal(str); pan_requested = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.start_pos = None; self.temp_rect = QtCore.QRect(); self.registered_items = []
-        self.mode = "setup"; self.selected_index = -1; self.scale = 1.0; self.pixmap_original = None
-        self.last_pan_pos = None # パンニング用
+        self.mode = "setup"; self.scale = 1.0; self.pixmap_original = None
+        self.last_pan_pos = None 
+        self.selected_indices = set() # 複数選択インデックスを保持
         
         self.setMouseTracking(True); self.setAcceptDrops(True)
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -185,15 +187,20 @@ class ImageCanvas(QtWidgets.QLabel):
                 item.rect.x() * self.scale, item.rect.y() * self.scale,
                 item.rect.width() * self.scale, item.rect.height() * self.scale
             )
-            painter.setPen(QtGui.QPen(item.color, 4 if i == self.selected_index else 1))
+            # 選択されているインデックスなら太線(4px)にする
+            is_selected = i in self.selected_indices
+            painter.setPen(QtGui.QPen(item.color, 4 if is_selected else 1))
             painter.drawRect(scaled_rect)
+            
         if self.mode == "setup" and not self.temp_rect.isNull():
             painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.red, 1, QtCore.Qt.PenStyle.DashLine))
             painter.drawRect(self.temp_rect)
 
     def mousePressEvent(self, event):
-        # パン開始（中ボタン or Alt+左ボタン）
-        if event.button() == QtCore.Qt.MouseButton.MiddleButton or (event.button() == QtCore.Qt.MouseButton.LeftButton and event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier):
+        modifiers = event.modifiers()
+        is_mod = bool(modifiers & (QtCore.Qt.KeyboardModifier.ControlModifier | QtCore.Qt.KeyboardModifier.ShiftModifier))
+
+        if event.button() == QtCore.Qt.MouseButton.MiddleButton or (event.button() == QtCore.Qt.MouseButton.LeftButton and modifiers & QtCore.Qt.KeyboardModifier.AltModifier):
             self.last_pan_pos = event.globalPosition().toPoint()
             self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
             return
@@ -202,16 +209,18 @@ class ImageCanvas(QtWidgets.QLabel):
         hit = False
         for i, reg in enumerate(self.registered_items):
             if reg.rect.contains(raw_pos):
-                hit = True; self.region_clicked.emit(i)
-                if self.mode == "selector": cmds.select(reg.names, replace=True)
+                hit = True
+                self.region_clicked.emit(i, is_mod)
+                if self.mode == "selector":
+                    cmds.select(reg.names, toggle=is_mod, replace=not is_mod)
                 break
         if not hit:
             self.start_pos = pos if self.mode == "setup" else None
-            self.request_deselect.emit()
-            if self.mode == "selector": cmds.select(cl=True)
+            self.request_deselect.emit(is_mod)
+            if self.mode == "selector" and not is_mod:
+                cmds.select(cl=True)
 
     def mouseMoveEvent(self, event):
-        # パン処理
         if self.last_pan_pos:
             delta = event.globalPosition().toPoint() - self.last_pan_pos
             self.pan_requested.emit(delta)
@@ -253,7 +262,8 @@ class MayaPickerEditor(QtWidgets.QWidget):
 
         self.list_widget = QtWidgets.QListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.list_widget.currentRowChanged.connect(self.sync_canvas)
+        # 選択変更時に常にキャンバスを更新するように接続
+        self.list_widget.itemSelectionChanged.connect(self.sync_selection_to_canvas)
         setup_v.addWidget(self.list_widget)
 
         get_h = QtWidgets.QHBoxLayout(); self.edit_names = QtWidgets.QLineEdit()
@@ -271,15 +281,35 @@ class MayaPickerEditor(QtWidgets.QWidget):
         file_h.addWidget(btn_save); file_h.addWidget(btn_load); self.right_v.addLayout(file_h)
 
         self.splitter.addWidget(left_w); self.splitter.addWidget(right_w)
-        # 初期スプリッター位置
         self.splitter.setSizes([300, 800])
         main_layout.addWidget(self.splitter)
 
-        # キャンバスからのシグナル接続
-        self.canvas.request_deselect.connect(lambda: self.list_widget.setCurrentRow(-1))
-        self.canvas.region_clicked.connect(lambda i: self.list_widget.setCurrentRow(i))
+        self.canvas.request_deselect.connect(self.handle_canvas_deselect)
+        self.canvas.region_clicked.connect(self.handle_canvas_region_click)
         self.canvas.file_dropped.connect(self.handle_drop_file)
         self.canvas.pan_requested.connect(self.handle_pan)
+
+    def sync_selection_to_canvas(self):
+        """リストの複数選択状態をキャンバスの太線描画に反映させる"""
+        selected_rows = {i.row() for i in self.list_widget.selectedIndexes()}
+        self.canvas.selected_indices = selected_rows
+        self.canvas.update()
+
+    def handle_canvas_region_click(self, row, is_mod):
+        item = self.list_widget.item(row)
+        if not item: return
+        
+        if is_mod:
+            item.setSelected(not item.isSelected())
+        else:
+            self.list_widget.clearSelection()
+            self.list_widget.setCurrentRow(row)
+            item.setSelected(True)
+
+    def handle_canvas_deselect(self, is_mod):
+        if not is_mod:
+            self.list_widget.clearSelection()
+            self.list_widget.setCurrentRow(-1)
 
     def handle_pan(self, delta):
         h_bar = self.scroll.horizontalScrollBar()
@@ -296,8 +326,6 @@ class MayaPickerEditor(QtWidgets.QWidget):
                 self.scroll.setWidgetResizable(False) 
                 j = os.path.splitext(path)[0] + ".json"; (self.load_json(j) if os.path.exists(j) else None)
         elif ext == ".json": self.load_json(path)
-
-    def sync_canvas(self, row): self.canvas.selected_index = row; self.canvas.update()
 
     def batch_replace(self):
         f, r = self.edit_f.text(), self.edit_r.text()

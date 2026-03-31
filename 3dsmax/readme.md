@@ -7,4 +7,4 @@
 MAXはBipedのメニューが出た状態で骨を選択すると少し時間がかかるので<br>
 キー入力系のBipedKeyスクリプトも作成してます<br>
 <br>
-SaveSettingsフォルダ内にBipedで設定した画像とセーブデータを置いてます<br>
+sampleDataフォルダ内にBipedで設定した画像とセーブデータを置いてます<br>

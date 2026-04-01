@@ -90,7 +90,7 @@ class ListColorItem(QtWidgets.QWidget):
         super().__init__(parent)
         self.index = index; self.block_signals = False
         layout = QtWidgets.QHBoxLayout(self); layout.setContentsMargins(0, 2, 5, 2); layout.setSpacing(3)
-        layout.addSpacing(40) # リスト左側の余白
+        layout.addSpacing(40) 
         
         display_text = os.path.basename(next_json) if next_json else ", ".join(names)
         self.names_edit = QtWidgets.QLineEdit(display_text); self.names_edit.editingFinished.connect(self.on_ui_data_changed); layout.addWidget(self.names_edit, 1)
@@ -191,7 +191,8 @@ class ImageCanvas(QtWidgets.QLabel):
             raw = event.pos()/self.scale; dx, dy = int(raw.x()-self.drag_start_pt.x()), int(raw.y()-self.drag_start_pt.y())
             if dx!=0 or dy!=0: self.multi_region_moved.emit(list(self.selected_indices), dx, dy); self.drag_start_pt = raw; return
         if self.mode == "setup" and self.start_pos: self.temp_rect = QtCore.QRect(self.start_pos, event.pos()).normalized(); self.update()
-    def mouseReleaseEvent(self, event): self.start_pos = self.last_pan_pos = None; self.is_dragging_items = False; self.setCursor(QtCore.Qt.ArrowCursor); self.temp_rect = QtCore.QRect(); self.update()
+    def mouseReleaseEvent(self, event): 
+        self.start_pos = self.last_pan_pos = None; self.is_dragging_items = False; self.setCursor(QtCore.Qt.ArrowCursor); self.update()
     def wheelEvent(self, event): self.scale *= (1.1 if event.angleDelta().y() > 0 else 0.9); self.scale = max(0.1, min(self.scale, 10.0)); self.update_canvas_size(); self.update()
     def dragEnterEvent(self, e): (e.acceptProposedAction() if e.mimeData().hasUrls() else None)
     def dropEvent(self, e):
@@ -202,7 +203,6 @@ class MayaPickerEditor(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent); self.setWindowTitle("Maya Picker Editor"); self.resize(1100, 750); self.setStyleSheet(STYLESHEET)
         
-        # ウィンドウアイコン
         icon_path = os.path.join(os.path.dirname(__file__), "PickerEditor.png")
         if os.path.exists(icon_path): self.setWindowIcon(QtGui.QIcon(icon_path))
 
@@ -259,7 +259,10 @@ class MayaPickerEditor(QtWidgets.QWidget):
     def do_register(self):
         s = self.canvas.scale; r = self.canvas.temp_rect; raw = [int(r.x()/s), int(r.y()/s), int(r.width()/s), int(r.height()/s)] if not r.isNull() else [10, 10, 50, 50]
         names = [n.strip() for n in self.edit_names.text().split(",") if n.strip()] or ["Control"]
-        reg = ClickRegion(names, raw, self.last_used_color); self.canvas.registered_items.append(reg); self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type); self.canvas.update()
+        reg = ClickRegion(names, raw, self.last_used_color); self.canvas.registered_items.append(reg); self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type)
+        # 登録完了後にキャンバスの矩形をクリア
+        self.canvas.temp_rect = QtCore.QRect()
+        self.canvas.update()
 
     def add_list_item(self, names, rect, color, shape_type, next_json=""):
         it = QtWidgets.QListWidgetItem(self.list_widget); w = ListColorItem(names, rect, color, shape_type, next_json, self.list_widget.count()-1)
@@ -267,7 +270,6 @@ class MayaPickerEditor(QtWidgets.QWidget):
         it.setSizeHint(w.sizeHint()); self.list_widget.addItem(it); self.list_widget.setItemWidget(it, w)
         w.set_edit_enabled(not self.btn_mode.isChecked())
 
-    # --- 複数選択同期ロジック ---
     def handle_rect_sync(self, idx, k, v):
         sel_rows = [i.row() for i in self.list_widget.selectedIndexes()]
         targets = sel_rows if idx in sel_rows else [idx]
@@ -314,7 +316,6 @@ class MayaPickerEditor(QtWidgets.QWidget):
             lines = []
             for i in self.canvas.registered_items:
                 path = os.path.basename(i.next_json) if i.next_json else ""
-                # 辞書の作成順序を明示
                 d = {}
                 d["names"] = i.names
                 d["rect"] = list(i.rect.getRect())

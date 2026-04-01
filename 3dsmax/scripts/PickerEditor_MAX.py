@@ -1,376 +1,289 @@
 # -*- coding: utf-8 -*-
 import json
 import os
+import math
 from PySide6 import QtWidgets, QtCore, QtGui
 from pymxs import runtime as mxs
 
 # --- スタイル設定 ---
 STYLESHEET = """
-    QWidget { background-color: #2b2b2b; color: #dcdcdc; font-family: 'Segoe UI', sans-serif; font-size: 12px; }
-    QWidget:disabled { color: #666666; }
+    QWidget { background-color: #2b2b2b; color: #dcdcdc; font-family: 'Segoe UI', sans-serif; font-size: 11px; }
     QGroupBox { border: 1px solid #3a3a3a; margin-top: 15px; padding-top: 10px; font-weight: bold; }
-    QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 0 5px; color: #aaaaaa; }
-    QPushButton { background-color: #3f3f3f; border: 1px solid #555; border-radius: 3px; padding: 3px; color: #ffffff; }
+    QPushButton { background-color: #3f3f3f; border: 1px solid #555; border-radius: 2px; padding: 2px; color: #ffffff; }
     QPushButton:hover { background-color: #4f4f4f; }
-    QPushButton:disabled { background-color: #2a2a2a; color: #666; border: 1px solid #333; }
-    QLineEdit { background-color: #1a1a1a; color: #ffffff; border: 1px solid #333; padding: 2px; }
+    QLineEdit { background-color: #1a1a1a; color: #ffffff; border: 1px solid #333; padding: 1px; }
+    QComboBox { background-color: #1a1a1a; color: #ffffff; border: 1px solid #333; }
     QListWidget { background-color: #1a1a1a; border: 1px solid #333; outline: none; }
     QListWidget::item:selected { background-color: #3d5a73; }
-    QScrollArea { border: none; background-color: #1a1a1a; }
-    DraggableLabel { background-color: #212121; color: #aaaaaa; font-weight: bold; border-radius: 3px; padding: 0 3px; }
+    QScrollArea { border: 1px solid #333; background-color: #1a1a1a; }
 """
+
+SHAPE_TYPES = [
+    "rect", "rect_fill", "circle", "circle_fill", "cross", 
+    "diamond", "diamond_fill", "tri_up", "tri_up_fill", 
+    "tri_down", "tri_down_fill", "tri_left", "tri_left_fill", 
+    "tri_right", "tri_right_fill", "double_circle", "star", "star_fill"
+]
+
+def draw_shape(painter, t, sr, color, is_selected=False):
+    painter.setPen(QtGui.QPen(color, 3 if is_selected else 1))
+    if t == "rect": painter.drawRect(sr)
+    elif t == "rect_fill": painter.fillRect(sr, color)
+    elif t == "circle": painter.drawEllipse(sr)
+    elif t == "circle_fill": 
+        painter.setBrush(color); painter.drawEllipse(sr); painter.setBrush(QtCore.Qt.NoBrush)
+    elif t == "double_circle":
+        painter.drawEllipse(sr)
+        inner = sr.adjusted(sr.width()*0.2, sr.height()*0.2, -sr.width()*0.2, -sr.height()*0.2)
+        painter.drawEllipse(inner)
+    elif t == "cross":
+        cx, cy = sr.center().x(), sr.center().y()
+        painter.drawLine(sr.left(), cy, sr.right(), cy); painter.drawLine(cx, sr.top(), cx, sr.bottom())
+    elif "diamond" in t:
+        poly = QtGui.QPolygon([QtCore.QPoint(sr.center().x(), sr.top()), QtCore.QPoint(sr.right(), sr.center().y()), QtCore.QPoint(sr.center().x(), sr.bottom()), QtCore.QPoint(sr.left(), sr.center().y())])
+        if "fill" in t: painter.setBrush(color)
+        painter.drawPolygon(poly); painter.setBrush(QtCore.Qt.NoBrush)
+    elif "tri_" in t:
+        if "up" in t: pts = [sr.bottomLeft(), sr.bottomRight(), QtCore.QPoint(sr.center().x(), sr.top())]
+        elif "down" in t: pts = [sr.topLeft(), sr.topRight(), QtCore.QPoint(sr.center().x(), sr.bottom())]
+        elif "left" in t: pts = [sr.topRight(), sr.bottomRight(), QtCore.QPoint(sr.left(), sr.center().y())]
+        elif "right" in t: pts = [sr.topLeft(), sr.bottomLeft(), QtCore.QPoint(sr.right(), sr.center().y())]
+        poly = QtGui.QPolygon(pts)
+        if "fill" in t: painter.setBrush(color)
+        painter.drawPolygon(poly); painter.setBrush(QtCore.Qt.NoBrush)
+    elif "star" in t:
+        poly = QtGui.QPolygon(); center = sr.center(); ro = min(sr.width(), sr.height())/2; ri = ro/2.5
+        for j in range(10):
+            r = ro if j%2==0 else ri; angle = (j*36-90)*math.pi/180
+            poly << QtCore.QPoint(center.x()+r*math.cos(angle), center.y()+r*math.sin(angle))
+        if "fill" in t: painter.setBrush(color)
+        painter.drawPolygon(poly); painter.setBrush(QtCore.Qt.NoBrush)
+
+def create_shape_icon(shape_type, color):
+    pixmap = QtGui.QPixmap(16, 16); pixmap.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pixmap); painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    draw_shape(painter, shape_type, QtCore.QRect(1, 1, 14, 14), QtGui.QColor(color))
+    painter.end(); return QtGui.QIcon(pixmap)
 
 class MaxStyleSpinBox(QtWidgets.QSpinBox):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.setRange(-20000, 20000)
-        self.setFixedWidth(45)
-        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-    def mouseReleaseEvent(self, event):
-        self.selectAll()
-        super().mouseReleaseEvent(event)
+        super().__init__(parent); self.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.setRange(-8000, 8000); self.setFixedWidth(35); self.setAlignment(QtCore.Qt.AlignCenter)
 
 class DraggableLabel(QtWidgets.QLabel):
     def __init__(self, text, target_spin, parent=None):
-        super().__init__(text, parent)
-        self.target_spin = target_spin
-        self.setCursor(QtCore.Qt.CursorShape.SizeHorCursor)
-        self.last_mouse_pos = None
-        self.setFixedWidth(18)
-        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-
-    def mousePressEvent(self, event):
-        if not self.isEnabled(): return
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self.last_mouse_pos = event.globalPosition().toPoint()
-            self.target_spin.setFocus()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if self.last_mouse_pos is not None:
-            current_pos = event.globalPosition().toPoint()
-            delta = current_pos.x() - self.last_mouse_pos.x()
-            if delta != 0:
-                self.target_spin.setValue(self.target_spin.value() + delta)
-                self.last_mouse_pos = current_pos
-                event.accept()
-
-    def mouseReleaseEvent(self, event):
-        self.last_mouse_pos = None
+        super().__init__(text, parent); self.target_spin = target_spin; self.setCursor(QtCore.Qt.SizeHorCursor)
+        self.last_pos = None; self.setFixedWidth(10); self.setStyleSheet("color: #888;")
+    def mousePressEvent(self, e): self.last_pos = e.globalPosition().toPoint()
+    def mouseMoveEvent(self, e):
+        if self.last_pos:
+            delta = e.globalPosition().toPoint().x() - self.last_pos.x()
+            if delta != 0: self.target_spin.setValue(self.target_spin.value() + delta); self.last_pos = e.globalPosition().toPoint()
+    def mouseReleaseEvent(self, e): self.last_pos = None
 
 class ListColorItem(QtWidgets.QWidget):
-    color_changed = QtCore.Signal(int, QtGui.QColor)
-    rect_changed = QtCore.Signal(int, str, int)
-    names_changed = QtCore.Signal(int, list)
+    color_changed = QtCore.Signal(int, QtGui.QColor); rect_changed = QtCore.Signal(int, str, int)
+    names_changed = QtCore.Signal(int, list); type_changed = QtCore.Signal(int, str); next_json_changed = QtCore.Signal(int, str)
 
-    def __init__(self, names, rect, color, index, parent=None):
-        super().__init__(parent)
-        self.index = index
-        self.block_signals = False
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0, 2, 5, 2); layout.setSpacing(5); layout.addSpacing(40) 
-        
-        self.names_edit = QtWidgets.QLineEdit(", ".join(names))
-        self.names_edit.setMinimumWidth(120)
-        self.names_edit.editingFinished.connect(self.on_names_ui_changed)
-        layout.addWidget(self.names_edit, 1)
-        
+    def __init__(self, names, rect, color, shape_type, next_json, index, parent=None):
+        super().__init__(parent); self.index = index; self.block_signals = False; self.current_color = QtGui.QColor(color)
+        layout = QtWidgets.QHBoxLayout(self); layout.setContentsMargins(2, 2, 2, 2); layout.setSpacing(4)
+        layout.addSpacing(40) # 40pxの余白
+        self.names_edit = QtWidgets.QLineEdit(next_json if next_json else ", ".join(names))
+        self.names_edit.editingFinished.connect(self.on_ui_data_changed); layout.addWidget(self.names_edit, 1)
+        self.btn_path = QtWidgets.QPushButton("..."); self.btn_path.setFixedWidth(20)
+        self.btn_path.clicked.connect(self.browse_path); layout.addWidget(self.btn_path)
+        self.type_combo = QtWidgets.QComboBox(); self.type_combo.setIconSize(QtCore.QSize(14, 14)); self.type_combo.setFixedWidth(45)
+        self.refresh_combo_icons()
+        if shape_type in SHAPE_TYPES: self.type_combo.setCurrentIndex(SHAPE_TYPES.index(shape_type))
+        self.type_combo.currentIndexChanged.connect(lambda idx: (self.type_changed.emit(self.index, SHAPE_TYPES[idx]) if not self.block_signals else None))
+        layout.addWidget(self.type_combo)
         self.spins = {}
-        for label_text, key in [("X", "x"), ("Y", "y"), ("W", "w"), ("H", "h")]:
-            sb = MaxStyleSpinBox()
-            sb.valueChanged.connect(lambda val, k=key: self.on_rect_ui_changed(k, val))
-            lbl = DraggableLabel(label_text, sb)
-            layout.addWidget(lbl); layout.addWidget(sb)
-            self.spins[key] = sb
-            
+        for lbl_t, key in [("X", "x"), ("Y", "y"), ("W", "w"), ("H", "h")]:
+            sb = MaxStyleSpinBox(); sb.valueChanged.connect(lambda val, k=key: (self.rect_changed.emit(self.index, k, val) if not self.block_signals else None))
+            layout.addWidget(DraggableLabel(lbl_t, sb)); layout.addWidget(sb); self.spins[key] = sb
         self.sync_spins(rect)
-        self.color_btn = QtWidgets.QPushButton("■")
-        self.color_btn.setFixedSize(22, 22)
-        self.set_btn_style(color)
-        self.color_btn.clicked.connect(self.pick_new_color)
-        layout.addWidget(self.color_btn)
+        self.color_btn = QtWidgets.QPushButton("■"); self.color_btn.setFixedSize(18, 18); self.set_btn_color(self.current_color)
+        self.color_btn.clicked.connect(self.pick_new_color); layout.addWidget(self.color_btn)
+
+    def refresh_combo_icons(self):
+        self.block_signals = True; curr = self.type_combo.currentIndex(); self.type_combo.clear()
+        for st in SHAPE_TYPES: self.type_combo.addItem(create_shape_icon(st, self.current_color), "")
+        self.type_combo.setCurrentIndex(curr if curr >= 0 else 0); self.block_signals = False
+
+    def set_btn_color(self, c):
+        self.current_color = c; self.color_btn.setStyleSheet(f"color: {c.name()}; background-color: #1a1a1a; border: 1px solid #555;"); self.refresh_combo_icons()
 
     def sync_spins(self, rect):
         self.block_signals = True
-        self.spins["x"].setValue(rect.x()); self.spins["y"].setValue(rect.y())
-        self.spins["w"].setValue(rect.width()); self.spins["h"].setValue(rect.height())
+        for k, v in zip(["x", "y", "w", "h"], [rect.x(), rect.y(), rect.width(), rect.height()]): self.spins[k].setValue(v)
         self.block_signals = False
 
-    def on_names_ui_changed(self):
-        new_list = [n.strip() for n in self.names_edit.text().split(",") if n.strip()]
-        self.names_changed.emit(self.index, new_list)
+    def browse_path(self):
+        p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select JSON", "", "*.json")
+        if p: self.names_edit.setText(os.path.basename(p)); self.on_ui_data_changed()
 
-    def on_rect_ui_changed(self, key, value):
-        if not self.block_signals: self.rect_changed.emit(self.index, key, value)
-
-    def set_btn_style(self, color):
-        self.current_color = color
-        self.color_btn.setStyleSheet(f"color: {color.name()}; font-size: 16px; background-color: #1a1a1a; border: 1px solid #555;")
+    def on_ui_data_changed(self):
+        text = self.names_edit.text()
+        if text.endswith(".json"): self.next_json_changed.emit(self.index, text); self.names_changed.emit(self.index, [])
+        else: self.next_json_changed.emit(self.index, ""); self.names_changed.emit(self.index, [n.strip() for n in text.split(",") if n.strip()])
 
     def pick_new_color(self):
         c = QtWidgets.QColorDialog.getColor(self.current_color, self)
         if c.isValid(): self.color_changed.emit(self.index, c)
 
-    def set_edit_enabled(self, enabled):
-        self.names_edit.setEnabled(enabled); self.color_btn.setEnabled(enabled)
-        for sb in self.spins.values(): sb.setEnabled(enabled)
-
-class ClickRegion:
-    def __init__(self, names, rect_data, color):
-        self.names = names if isinstance(names, list) else [names]
-        self.rect = QtCore.QRect(*rect_data)
-        self.color = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
-
 class ImageCanvas(QtWidgets.QLabel):
-    request_deselect = QtCore.Signal(bool) # is_modifier_pressed
-    region_clicked = QtCore.Signal(int, bool) # index, is_modifier_pressed
-    pan_requested = QtCore.Signal(QtCore.QPoint)
+    request_deselect = QtCore.Signal(bool); region_clicked = QtCore.Signal(int, bool)
+    multi_region_moved = QtCore.Signal(list, int, int); pan_requested = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, parent=None):
-        super().__init__(parent); self.start_pos = None; self.temp_rect = QtCore.QRect()
-        self.registered_items = []; self.mode = "setup"; self.selected_indices = set()
-        self.scale = 1.0; self.pixmap_original = None; self.last_pan_pos = None
-        
-        self.setMouseTracking(True)
-        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
-        self.setStyleSheet("background-color: #1a1a1a;")
+        super().__init__(parent); self.setAcceptDrops(True); self.pixmap_original = None; self.scale = 1.0
+        self.temp_rect = QtCore.QRect(); self.registered_items = []; self.mode = "setup"; self.selected_indices = set()
+        self.start_pos = None; self.last_pan_pos = None; self.is_dragging = False
+        self.setMouseTracking(True); self.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
 
-    def set_image(self, pixmap):
-        self.pixmap_original = pixmap; self.scale = 1.0; self.update_canvas_size()
-
+    def set_image(self, pix):
+        if pix and not pix.isNull(): self.pixmap_original = pix; self.update_canvas_size()
     def update_canvas_size(self):
         if self.pixmap_original:
-            new_size = self.pixmap_original.size() * self.scale
-            self.setPixmap(self.pixmap_original.scaled(new_size, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
-            self.setFixedSize(new_size)
-
-    def wheelEvent(self, event):
-        if not self.pixmap_original: return
-        delta = event.angleDelta().y(); old_scale = self.scale
-        if delta > 0: self.scale *= 1.1
-        else: self.scale /= 1.1
-        self.scale = max(0.1, min(self.scale, 10.0))
-        if old_scale != self.scale: self.update_canvas_size(); self.update()
+            ns = self.pixmap_original.size() * self.scale
+            self.setPixmap(self.pixmap_original.scaled(ns, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)); self.setFixedSize(ns)
 
     def paintEvent(self, event):
-        super().paintEvent(event); painter = QtGui.QPainter(self)
+        super().paintEvent(event); painter = QtGui.QPainter(self); painter.setRenderHint(QtGui.QPainter.Antialiasing)
         for i, item in enumerate(self.registered_items):
-            scaled_rect = QtCore.QRect(
-                item.rect.x() * self.scale, item.rect.y() * self.scale,
-                item.rect.width() * self.scale, item.rect.height() * self.scale
-            )
-            is_sel = i in self.selected_indices
-            painter.setPen(QtGui.QPen(item.color, 4 if is_sel else 1))
-            painter.drawRect(scaled_rect)
-        if self.mode == "setup" and not self.temp_rect.isNull():
-            painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.red, 2, QtCore.Qt.PenStyle.DashLine))
-            painter.drawRect(self.temp_rect)
+            sr = QtCore.QRect(item.rect.x()*self.scale, item.rect.y()*self.scale, item.rect.width()*self.scale, item.rect.height()*self.scale)
+            draw_shape(painter, item.shape_type, sr, item.color, i in self.selected_indices)
+        if self.mode == "setup" and self.start_pos and not self.temp_rect.isNull():
+            painter.setPen(QtGui.QPen(QtCore.Qt.red, 1, QtCore.Qt.DashLine)); painter.drawRect(self.temp_rect)
 
     def mousePressEvent(self, event):
-        modifiers = event.modifiers()
-        is_mod = bool(modifiers & (QtCore.Qt.KeyboardModifier.ControlModifier | QtCore.Qt.KeyboardModifier.ShiftModifier))
-
-        if event.button() == QtCore.Qt.MouseButton.MiddleButton or \
-           (event.button() == QtCore.Qt.MouseButton.LeftButton and modifiers & QtCore.Qt.KeyboardModifier.AltModifier):
-            self.last_pan_pos = event.globalPosition().toPoint()
-            self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
-            return
-
-        pos = event.position().toPoint(); raw_pos = pos / self.scale; hit_idx = -1
-        for i, reg in enumerate(self.registered_items):
-            if reg.rect.contains(raw_pos): hit_idx = i; break
-            
-        if hit_idx != -1:
-            self.region_clicked.emit(hit_idx, is_mod)
-            if self.mode == "selector":
-                nodes = [mxs.getNodeByName(n) for n in self.registered_items[hit_idx].names if mxs.getNodeByName(n)]
-                if nodes:
-                    if is_mod: mxs.selectMore(nodes)
-                    else: mxs.select(nodes)
-        else:
-            self.start_pos = pos if self.mode == "setup" else None
-            self.request_deselect.emit(is_mod)
-            if self.mode == "selector" and not is_mod: mxs.select(mxs.EMPTY_ARRAY)
+        mod = event.modifiers(); pos = event.position().toPoint(); raw = pos / self.scale
+        is_mod = bool(mod & (QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier))
+        if event.button() == QtCore.Qt.MiddleButton or (event.button() == QtCore.Qt.LeftButton and mod & QtCore.Qt.AltModifier):
+            self.last_pan_pos = event.globalPosition().toPoint(); self.setCursor(QtCore.Qt.ClosedHandCursor); return
+        hit = next((i for i, r in enumerate(self.registered_items) if r.rect.contains(raw)), -1)
+        if hit != -1:
+            if self.mode == "setup" and not is_mod:
+                if hit not in self.selected_indices: self.region_clicked.emit(hit, False)
+                self.is_dragging = True; self.drag_last_raw = raw; self.setCursor(QtCore.Qt.SizeAllCursor)
+            else: self.region_clicked.emit(hit, is_mod)
+        else: self.start_pos = pos if self.mode == "setup" else None; self.request_deselect.emit(is_mod)
 
     def mouseMoveEvent(self, event):
         if self.last_pan_pos:
             delta = event.globalPosition().toPoint() - self.last_pan_pos
-            self.pan_requested.emit(delta)
-            self.last_pan_pos = event.globalPosition().toPoint()
-            return
-        if self.mode == "setup" and self.start_pos:
-            self.temp_rect = QtCore.QRect(self.start_pos, event.position().toPoint()).normalized()
-            self.update()
+            self.pan_requested.emit(delta); self.last_pan_pos = event.globalPosition().toPoint(); return
+        if self.is_dragging:
+            raw = event.position().toPoint() / self.scale; delta = raw - self.drag_last_raw
+            if int(delta.x()) != 0 or int(delta.y()) != 0:
+                self.multi_region_moved.emit(list(self.selected_indices), int(delta.x()), int(delta.y()))
+                self.drag_last_raw += QtCore.QPoint(int(delta.x()), int(delta.y()))
+        elif self.start_pos:
+            self.temp_rect = QtCore.QRect(self.start_pos, event.position().toPoint()).normalized(); self.update()
 
-    def mouseReleaseEvent(self, event):
-        self.start_pos = None; self.last_pan_pos = None
-        self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+    def mouseReleaseEvent(self, e): self.start_pos = self.last_pan_pos = None; self.is_dragging = False; self.setCursor(QtCore.Qt.ArrowCursor); self.temp_rect = QtCore.QRect(); self.update()
+    def wheelEvent(self, e):
+        self.scale *= (1.1 if e.angleDelta().y() > 0 else 0.9); self.scale = max(0.1, min(self.scale, 10.0)); self.update_canvas_size(); self.update()
+
+class ClickRegion:
+    def __init__(self, names, rect_data, color, shape_type="rect", next_json=""):
+        self.names = names if isinstance(names, list) else [names]; self.rect = QtCore.QRect(*rect_data)
+        self.color = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
+        self.shape_type = shape_type; self.next_json = next_json
 
 class PickerEditor(QtWidgets.QWidget):
     def __init__(self, parent=None):
-        super().__init__(parent); self.setWindowTitle("PickerEditor - Max Version"); self.resize(1200, 800)
-        self.setWindowFlags(QtCore.Qt.Window); self.setAcceptDrops(True); self.setStyleSheet(STYLESHEET)
-        
-        main_v = QtWidgets.QVBoxLayout(self); self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        
-        left_w = QtWidgets.QWidget(); left_v = QtWidgets.QVBoxLayout(left_w); left_v.setContentsMargins(0, 0, 0, 0)
-        self.scroll = QtWidgets.QScrollArea(); self.canvas = ImageCanvas()
-        self.scroll.setWidget(self.canvas); left_v.addWidget(self.scroll)
-        self.btn_mode = QtWidgets.QPushButton("Switch to SELECTOR Mode"); self.btn_mode.setCheckable(True); self.btn_mode.setFixedHeight(40)
-        self.btn_mode.toggled.connect(self.toggle_mode); left_v.addWidget(self.btn_mode)
-
-        right_w = QtWidgets.QWidget(); right_panel = QtWidgets.QVBoxLayout(right_w)
+        super().__init__(parent); self.setWindowTitle("PickerEditor - Max Version"); self.resize(1150, 750); self.setStyleSheet(STYLESHEET)
+        self.setAcceptDrops(True) # D&D有効化
+        self.current_json_path = ""; self.last_used_color = QtGui.QColor(0, 255, 0)
+        main_v = QtWidgets.QVBoxLayout(self); main_v.setContentsMargins(5, 5, 5, 5)
+        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        left_w = QtWidgets.QWidget(); left_v = QtWidgets.QVBoxLayout(left_w); left_v.setContentsMargins(0,0,0,0)
+        self.scroll = QtWidgets.QScrollArea(); self.canvas = ImageCanvas(); self.scroll.setWidget(self.canvas); left_v.addWidget(self.scroll)
+        self.btn_mode = QtWidgets.QPushButton("Switch to SELECTOR Mode"); self.btn_mode.setCheckable(True); self.btn_mode.setFixedHeight(35); self.btn_mode.toggled.connect(self.toggle_mode); left_v.addWidget(self.btn_mode)
+        right_w = QtWidgets.QWidget(); right_panel = QtWidgets.QVBoxLayout(right_w); right_panel.setContentsMargins(0,0,0,0)
         self.setup_group = QtWidgets.QGroupBox("Registration"); setup_v = QtWidgets.QVBoxLayout(self.setup_group)
-        
-        rep_h = QtWidgets.QHBoxLayout(); self.edit_f = QtWidgets.QLineEdit(); self.edit_f.setPlaceholderText("Find...")
-        self.edit_r = QtWidgets.QLineEdit(); self.edit_r.setPlaceholderText("Replace...")
-        btn_rep = QtWidgets.QPushButton("Replace All"); btn_rep.clicked.connect(self.batch_replace)
-        rep_h.addWidget(self.edit_f); rep_h.addWidget(self.edit_r); rep_h.addWidget(btn_rep); setup_v.addLayout(rep_h)
-
-        self.list_widget = QtWidgets.QListWidget()
-        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-        self.list_widget.itemSelectionChanged.connect(self.sync_selection_to_canvas)
-        setup_v.addWidget(self.list_widget)
-
+        self.list_widget = QtWidgets.QListWidget(); self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.list_widget.itemSelectionChanged.connect(self.sync_selection_to_canvas); setup_v.addWidget(self.list_widget)
         get_h = QtWidgets.QHBoxLayout(); self.edit_names = QtWidgets.QLineEdit()
         btn_get = QtWidgets.QPushButton("Get Selected"); btn_get.clicked.connect(lambda: self.edit_names.setText(", ".join([o.name for o in list(mxs.selection)])))
         get_h.addWidget(self.edit_names); get_h.addWidget(btn_get); setup_v.addLayout(get_h)
-
-        self.btn_reg = QtWidgets.QPushButton("Register Area"); self.btn_reg.setFixedHeight(35); self.btn_reg.clicked.connect(self.do_register); setup_v.addWidget(self.btn_reg)
+        self.btn_reg = QtWidgets.QPushButton("Register Area"); self.btn_reg.setFixedHeight(30); self.btn_reg.clicked.connect(self.do_register); setup_v.addWidget(self.btn_reg)
         self.btn_del = QtWidgets.QPushButton("Delete Selected"); self.btn_del.clicked.connect(self.delete_items); setup_v.addWidget(self.btn_del)
         right_panel.addWidget(self.setup_group)
-        
         file_h = QtWidgets.QHBoxLayout(); btn_save = QtWidgets.QPushButton("Save JSON"); btn_load = QtWidgets.QPushButton("Load JSON")
         btn_save.clicked.connect(self.save_json); btn_load.clicked.connect(self.load_json); file_h.addWidget(btn_save); file_h.addWidget(btn_load); right_panel.addLayout(file_h)
+        self.splitter.addWidget(left_w); self.splitter.addWidget(right_w); self.splitter.setStretchFactor(0, 1); self.splitter.setStretchFactor(1, 1); main_v.addWidget(self.splitter)
+        self.canvas.request_deselect.connect(lambda mod: (self.list_widget.clearSelection() if not mod else None))
+        self.canvas.region_clicked.connect(self.handle_canvas_region_click); self.canvas.multi_region_moved.connect(self.handle_multi_move); self.canvas.pan_requested.connect(self.handle_pan)
 
-        self.splitter.addWidget(left_w); self.splitter.addWidget(right_w); self.splitter.setSizes([350, 800])
-        main_v.addWidget(self.splitter)
-
-        self.canvas.request_deselect.connect(self.handle_canvas_deselect)
-        self.canvas.region_clicked.connect(self.handle_canvas_region_click)
-        self.canvas.pan_requested.connect(self.handle_pan)
-
-    def sync_selection_to_canvas(self):
-        selected_rows = {i.row() for i in self.list_widget.selectedIndexes()}
-        self.canvas.selected_indices = selected_rows
-        self.canvas.update()
-
-    def handle_canvas_region_click(self, row, is_mod):
-        item = self.list_widget.item(row)
-        if not item: return
-        if is_mod:
-            item.setSelected(not item.isSelected())
-        else:
-            self.list_widget.clearSelection()
-            self.list_widget.setCurrentRow(row)
-            item.setSelected(True)
-
-    def handle_canvas_deselect(self, is_mod):
-        if not is_mod:
-            self.list_widget.clearSelection()
-            self.list_widget.setCurrentRow(-1)
-
-    def handle_pan(self, delta):
-        h = self.scroll.horizontalScrollBar(); v = self.scroll.verticalScrollBar()
-        h.setValue(h.value() - delta.x()); v.setValue(v.value() - delta.y())
-
-    def handle_rect_sync(self, origin_idx, key, value):
-        selected_rows = [i.row() for i in self.list_widget.selectedIndexes()]
-        targets = selected_rows if origin_idx in selected_rows else [origin_idx]
-        for row in targets:
-            reg = self.canvas.registered_items[row]; r = list(reg.rect.getRect())
-            r[{"x":0,"y":1,"w":2,"h":3}[key]] = value; reg.rect = QtCore.QRect(*r)
-            w = self.list_widget.itemWidget(self.list_widget.item(row))
-            if w and row != origin_idx: w.block_signals = True; w.spins[key].setValue(value); w.block_signals = False
-        self.canvas.update()
-
-    def handle_color_sync(self, origin_idx, color):
-        selected_rows = [i.row() for i in self.list_widget.selectedIndexes()]
-        targets = selected_rows if origin_idx in selected_rows else [origin_idx]
-        for row in targets:
-            self.canvas.registered_items[row].color = color
-            w = self.list_widget.itemWidget(self.list_widget.item(row))
-            if w: w.set_btn_style(color)
-        self.canvas.update()
-
-    def dragEnterEvent(self, e): e.acceptProposedAction() if e.mimeData().hasUrls() else e.ignore()
-    def dropEvent(self, e):
-        path = e.mimeData().urls()[0].toLocalFile(); ext = os.path.splitext(path)[1].lower()
-        if ext in [".png", ".jpg", ".jpeg"]:
+    def dragEnterEvent(self, e): 
+        if e.mimeData().hasUrls(): e.acceptProposedAction()
+    def dropEvent(self, e): 
+        self.handle_dropped_file(e.mimeData().urls()[0].toLocalFile()); e.acceptProposedAction()
+    def handle_dropped_file(self, path):
+        ext = os.path.splitext(path)[1].lower()
+        if ext in [".png", ".jpg", ".jpeg", ".bmp", ".tga"]:
             pix = QtGui.QPixmap(path)
-            if not pix.isNull():
-                self.canvas.set_image(pix)
-                j = os.path.splitext(path)[0] + ".json"; (self.load_json_at_path(j) if os.path.exists(j) else None)
+            if not pix.isNull(): 
+                self.canvas.set_image(pix); self.setWindowTitle(f"Picker: {os.path.basename(path)}")
+                json_p = os.path.splitext(path)[0] + ".json"
+                if os.path.exists(json_p): self.load_json_at_path(json_p)
         elif ext == ".json": self.load_json_at_path(path)
-        e.acceptProposedAction()
-
-    def batch_replace(self):
-        f, r = self.edit_f.text(), self.edit_r.text()
-        if not f: return
-        for i, reg in enumerate(self.canvas.registered_items):
-            reg.names = [n.replace(f, r) for n in reg.names]
-            w = self.list_widget.itemWidget(self.list_widget.item(i))
-            if w: w.names_edit.setText(", ".join(reg.names))
-
-    def do_register(self):
-        names = [n.strip() for n in self.edit_names.text().split(",") if n.strip()]
-        if not self.canvas.temp_rect.isNull() and names:
-            raw_rect = [
-                int(self.canvas.temp_rect.x() / self.canvas.scale),
-                int(self.canvas.temp_rect.y() / self.canvas.scale),
-                int(self.canvas.temp_rect.width() / self.canvas.scale),
-                int(self.canvas.temp_rect.height() / self.canvas.scale)
-            ]
-            reg = ClickRegion(names, raw_rect, [0, 255, 0])
-            self.canvas.registered_items.append(reg)
-            self.add_list_item(names, reg.rect, QtGui.QColor(0, 255, 0))
-            self.canvas.temp_rect = QtCore.QRect(); self.canvas.update()
-
-    def add_list_item(self, names, rect, color):
-        item = QtWidgets.QListWidgetItem(self.list_widget)
-        w = ListColorItem(names, rect, color, self.list_widget.count()-1)
-        w.names_changed.connect(lambda i, n: setattr(self.canvas.registered_items[i], 'names', n))
-        w.rect_changed.connect(self.handle_rect_sync); w.color_changed.connect(self.handle_color_sync)
-        item.setSizeHint(w.sizeHint()); self.list_widget.addItem(item); self.list_widget.setItemWidget(item, w)
-
-    def delete_items(self):
-        rows = sorted([self.list_widget.row(it) for it in self.list_widget.selectedItems()], reverse=True)
-        for r in rows: self.list_widget.takeItem(r); self.canvas.registered_items.pop(r)
-        for i in range(self.list_widget.count()):
-            w = self.list_widget.itemWidget(self.list_widget.item(i))
-            if w: w.index = i
+    def handle_canvas_region_click(self, row, is_mod):
+        it = self.list_widget.item(row)
+        if it: (it.setSelected(not it.isSelected()) if is_mod else (self.list_widget.clearSelection(), self.list_widget.setCurrentRow(row), it.setSelected(True)))
+    def handle_pan(self, d): self.scroll.horizontalScrollBar().setValue(self.scroll.horizontalScrollBar().value()-d.x()); self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().value()-d.y())
+    def handle_multi_move(self, indices, dx, dy):
+        for idx in indices: reg = self.canvas.registered_items[idx]; reg.rect.translate(dx, dy); w = self.list_widget.itemWidget(self.list_widget.item(idx)); (w.sync_spins(reg.rect) if w else None)
         self.canvas.update()
-
+    def do_register(self):
+        names = [n.strip() for n in self.edit_names.text().split(",") if n.strip()] or ["Control"]
+        s = self.canvas.scale; r = self.canvas.temp_rect; raw = [int(r.x()/s), int(r.y()/s), int(r.width()/s), int(r.height()/s)] if not r.isNull() else [10,10,40,40]
+        reg = ClickRegion(names, raw, self.last_used_color); self.canvas.registered_items.append(reg); self.add_list_item(names, reg.rect, reg.color, reg.shape_type); self.canvas.update()
+    def add_list_item(self, names, rect, color, shape_type, next_json=""):
+        it = QtWidgets.QListWidgetItem(self.list_widget); w = ListColorItem(names, rect, color, shape_type, next_json, self.list_widget.count()-1)
+        w.rect_changed.connect(self.handle_rect_sync); w.color_changed.connect(self.handle_color_sync); w.type_changed.connect(self.handle_type_sync)
+        w.names_changed.connect(lambda i, n: setattr(self.canvas.registered_items[i], 'names', n)); w.next_json_changed.connect(lambda i, p: setattr(self.canvas.registered_items[i], 'next_json', p))
+        it.setSizeHint(w.sizeHint()); self.list_widget.addItem(it); self.list_widget.setItemWidget(it, w)
+    def handle_rect_sync(self, idx, key, val): reg = self.canvas.registered_items[idx]; r = list(reg.rect.getRect()); r[{"x":0,"y":1,"w":2,"h":3}[key]] = val; reg.rect = QtCore.QRect(*r); self.canvas.update()
+    def handle_color_sync(self, idx, c): self.last_used_color = c; self.canvas.registered_items[idx].color = c; w = self.list_widget.itemWidget(self.list_widget.item(idx)); (w.set_btn_color(c) if w else None); self.canvas.update()
+    def handle_type_sync(self, idx, t): self.canvas.registered_items[idx].shape_type = t; self.canvas.update()
+    def sync_selection_to_canvas(self): self.canvas.selected_indices = {i.row() for i in self.list_widget.selectedIndexes()}; self.canvas.update()
+    def delete_items(self):
+        for r in sorted([self.list_widget.row(it) for it in self.list_widget.selectedItems()], reverse=True): self.list_widget.takeItem(r); self.canvas.registered_items.pop(r)
+        for i in range(self.list_widget.count()): (setattr(self.list_widget.itemWidget(self.list_widget.item(i)), 'index', i) if self.list_widget.itemWidget(self.list_widget.item(i)) else None)
+        self.canvas.update()
     def toggle_mode(self, checked):
-        is_edit = not checked; self.canvas.mode = "selector" if checked else "setup"
-        self.btn_mode.setText("SELECTOR Mode (Active)" if checked else "Switch to SELECTOR Mode")
-        self.setup_group.setEnabled(is_edit); self.btn_reg.setEnabled(is_edit); self.btn_del.setEnabled(is_edit)
-        for i in range(self.list_widget.count()):
-            w = self.list_widget.itemWidget(self.list_widget.item(i))
-            if w: w.set_edit_enabled(is_edit)
+        self.canvas.mode = "selector" if checked else "setup"; self.setup_group.setEnabled(not checked)
+        for i in range(self.list_widget.count()): (self.list_widget.itemWidget(self.list_widget.item(i)).setEnabled(not checked) if self.list_widget.itemWidget(self.list_widget.item(i)) else None)
 
     def save_json(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save JSON", "", "*.json")
-        if path:
-            data = [{"names": i.names, "rect": list(i.rect.getRect()), "color": list(i.color.getRgb())} for i in self.canvas.registered_items]
-            with open(path, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4, ensure_ascii=False)
+        p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save JSON", self.current_json_path, "*.json")
+        if p:
+            lines = []
+            for i in self.canvas.registered_items:
+                path = os.path.basename(i.next_json) if i.next_json else ""
+                data = {"names": i.names, "rect": list(i.rect.getRect()), "color": list(i.color.getRgb()), "shape_type": i.shape_type, "next_json": path}
+                lines.append(json.dumps(data, ensure_ascii=False))
+            with open(p, 'w', encoding='utf-8') as f:
+                f.write("[\n" + ",\n".join(lines) + "\n]")
+            self.current_json_path = p; self.setWindowTitle(f"Picker: {os.path.basename(p)}")
 
-    def load_json(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open JSON", "", "*.json")
-        if path: self.load_json_at_path(path)
-
-    def load_json_at_path(self, path):
-        if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f: data = json.load(f)
-            self.canvas.registered_items = []; self.list_widget.clear()
+    def load_json(self): (self.load_json_at_path(QtWidgets.QFileDialog.getOpenFileName(self, "Open JSON", self.current_json_path, "*.json")[0]) if True else None)
+    def load_json_at_path(self, p):
+        if p and os.path.exists(p):
+            with open(p, 'r', encoding='utf-8') as f: data = json.load(f)
+            self.canvas.registered_items = []; self.list_widget.clear(); base = os.path.dirname(p)
             for d in data:
-                reg = ClickRegion(d.get("names", [d.get("name", "Unknown")]), d["rect"], d["color"])
-                self.canvas.registered_items.append(reg); self.add_list_item(reg.names, reg.rect, reg.color)
-            self.canvas.update()
+                nj = d.get("next_json", ""); full = os.path.join(base, nj) if nj else ""
+                st = d.get("shape_type", d.get("type", "rect"))
+                reg = ClickRegion(d.get("names", []), d["rect"], d["color"], st, full)
+                self.canvas.registered_items.append(reg); self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type, nj)
+            self.canvas.update(); self.current_json_path = p; self.setWindowTitle(f"Picker: {os.path.basename(p)}")
 
 if __name__ == "__main__":
     for w in QtWidgets.QApplication.allWidgets():
-        if w.windowTitle() == "PickerEditor - Max Version": w.close(); w.deleteLater()
+        if w.windowTitle().startswith("Picker"): w.close(); w.deleteLater()
     ui = PickerEditor(); ui.show()

@@ -27,7 +27,7 @@
 　右にリストが作成されるので、囲った場所が気に入らない場合は数値を変更して微調整<br>
 　位置とサイズ、色を後から変更可<br>
  <br>
-<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor_MAX.png" /><br>
+<img alt="BipedScaler" src="https://github.com/cgtc11/image/blob/main/PickerEditor_MAX2.png" /><br>
 <br>
 　オブジェクトを選択（複数可）して「GetSelect」ボタンで名前表示（手動入力可）<br>
 　囲って作成したエリアと、選択オブジェクト名の両方を確認して「ResistarArea」ボタンを押すと関連付け<br>

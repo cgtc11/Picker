@@ -26,17 +26,13 @@ SHAPE_TYPES = [
 ]
 
 def draw_shape(painter, t, sr, color, is_selected=False):
-    # 選択時は太さ3、通常は1のペンを設定
     pen_width = 3 if is_selected else 1
     painter.setPen(QtGui.QPen(color, pen_width))
-    
-    # 塗りつぶし設定
     if "_fill" in t:
         painter.setBrush(QtGui.QBrush(color))
     else:
         painter.setBrush(QtCore.Qt.NoBrush)
 
-    # 各形状の描画
     if "rect" in t:
         painter.drawRect(sr)
     elif "circle" in t:
@@ -63,19 +59,14 @@ def draw_shape(painter, t, sr, color, is_selected=False):
         elif "down" in t: pts = [sr.topLeft(), sr.topRight(), QtCore.QPoint(sr.center().x(), sr.bottom())]
         elif "left" in t: pts = [sr.topRight(), sr.bottomRight(), QtCore.QPoint(sr.left(), sr.center().y())]
         elif "right" in t: pts = [sr.topLeft(), sr.bottomLeft(), QtCore.QPoint(sr.right(), sr.center().y())]
-        if pts:
-            painter.drawPolygon(QtGui.QPolygon(pts))
+        if pts: painter.drawPolygon(QtGui.QPolygon(pts))
     elif "star" in t:
-        poly = QtGui.QPolygon()
-        center = sr.center()
-        ro = min(sr.width(), sr.height())/2
-        ri = ro/2.5
+        poly = QtGui.QPolygon(); center = sr.center()
+        ro = min(sr.width(), sr.height())/2; ri = ro/2.5
         for j in range(10):
-            r = ro if j%2==0 else ri
-            angle = (j*36-90)*math.pi/180
+            r = ro if j%2==0 else ri; angle = (j*36-90)*math.pi/180
             poly << QtCore.QPoint(center.x()+r*math.cos(angle), center.y()+r*math.sin(angle))
         painter.drawPolygon(poly)
-    
     painter.setBrush(QtCore.Qt.NoBrush)
 
 def create_shape_icon(shape_type, color):
@@ -110,8 +101,7 @@ class ListColorItem(QtWidgets.QWidget):
         layout = QtWidgets.QHBoxLayout(self); layout.setContentsMargins(2, 2, 2, 2); layout.setSpacing(4)
         layout.addSpacing(40) 
         self.names_edit = QtWidgets.QLineEdit(); self.names_edit.editingFinished.connect(self.on_ui_data_changed); layout.addWidget(self.names_edit, 1)
-        self.btn_path = QtWidgets.QPushButton("..."); self.btn_path.setFixedWidth(20)
-        self.btn_path.clicked.connect(self.browse_path); layout.addWidget(self.btn_path)
+        self.btn_path = QtWidgets.QPushButton("..."); self.btn_path.setFixedWidth(20); self.btn_path.clicked.connect(self.browse_path); layout.addWidget(self.btn_path)
         self.type_combo = QtWidgets.QComboBox(); self.type_combo.setIconSize(QtCore.QSize(14, 14)); self.type_combo.setFixedWidth(45)
         for st in SHAPE_TYPES: self.type_combo.addItem(create_shape_icon(st, self.current_color), "", st)
         self.type_combo.currentIndexChanged.connect(self.on_type_ui_changed); layout.addWidget(self.type_combo)
@@ -224,6 +214,17 @@ class PickerEditor(QtWidgets.QWidget):
         self.btn_mode = QtWidgets.QPushButton("Switch to SELECTOR Mode"); self.btn_mode.setCheckable(True); self.btn_mode.setFixedHeight(35); self.btn_mode.toggled.connect(self.toggle_mode); left_v.addWidget(self.btn_mode)
         right_w = QtWidgets.QWidget(); right_panel = QtWidgets.QVBoxLayout(right_w); right_panel.setContentsMargins(0,0,0,0)
         self.setup_group = QtWidgets.QGroupBox("Registration"); setup_v = QtWidgets.QVBoxLayout(self.setup_group)
+        
+        # --- 置換UIの復元 ---
+        replace_h = QtWidgets.QHBoxLayout()
+        self.edit_find = QtWidgets.QLineEdit(); self.edit_find.setPlaceholderText("Find...")
+        self.edit_replace = QtWidgets.QLineEdit(); self.edit_replace.setPlaceholderText("Replace...")
+        btn_replace = QtWidgets.QPushButton("Replace All")
+        btn_replace.clicked.connect(self.batch_replace_names)
+        replace_h.addWidget(self.edit_find); replace_h.addWidget(self.edit_replace); replace_h.addWidget(btn_replace)
+        setup_v.addLayout(replace_h)
+        # ------------------
+
         self.list_widget = QtWidgets.QListWidget()
         self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.list_widget.setDragEnabled(True); self.list_widget.setAcceptDrops(True)
@@ -231,6 +232,7 @@ class PickerEditor(QtWidgets.QWidget):
         self.list_widget.setDefaultDropAction(QtCore.Qt.MoveAction)
         self.list_widget.model().rowsMoved.connect(self.sync_data_order_from_ui)
         self.list_widget.itemSelectionChanged.connect(self.sync_selection_to_canvas); setup_v.addWidget(self.list_widget)
+        
         get_h = QtWidgets.QHBoxLayout(); self.edit_names = QtWidgets.QLineEdit()
         btn_get = QtWidgets.QPushButton("Get Selected"); btn_get.clicked.connect(lambda: self.edit_names.setText(", ".join([o.name for o in list(mxs.selection)])))
         get_h.addWidget(self.edit_names); get_h.addWidget(btn_get); setup_v.addLayout(get_h)
@@ -242,6 +244,17 @@ class PickerEditor(QtWidgets.QWidget):
         self.splitter.addWidget(left_w); self.splitter.addWidget(right_w); self.splitter.setStretchFactor(0, 1); self.splitter.setStretchFactor(1, 1); main_v.addWidget(self.splitter)
         self.canvas.request_deselect.connect(lambda mod: (self.list_widget.clearSelection() if not mod else None))
         self.canvas.region_clicked.connect(self.handle_canvas_region_click); self.canvas.multi_region_moved.connect(self.handle_multi_move); self.canvas.pan_requested.connect(self.handle_pan)
+
+    def batch_replace_names(self):
+        f, r = self.edit_find.text(), self.edit_replace.text()
+        if not f: return
+        self.is_syncing = True
+        for i, reg in enumerate(self.canvas.registered_items):
+            if not reg.next_json:
+                reg.names = [n.replace(f, r) for n in reg.names]
+                w = self.list_widget.itemWidget(self.list_widget.item(i))
+                if w: w.update_ui_silently(reg.names, reg.rect, reg.color, reg.shape_type, reg.next_json)
+        self.is_syncing = False
 
     def sync_data_order_from_ui(self, *args):
         new_items = []

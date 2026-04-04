@@ -26,23 +26,37 @@ SHAPE_TYPES = [
 ]
 
 def draw_shape(painter, t, sr, color, is_selected=False):
-    painter.setPen(QtGui.QPen(color, 3 if is_selected else 1))
-    if t == "rect": painter.drawRect(sr)
-    elif t == "rect_fill": painter.fillRect(sr, color)
-    elif t == "circle": painter.drawEllipse(sr)
-    elif t == "circle_fill": 
-        painter.setBrush(color); painter.drawEllipse(sr); painter.setBrush(QtCore.Qt.NoBrush)
+    # 選択時は太さ3、通常は1のペンを設定
+    pen_width = 3 if is_selected else 1
+    painter.setPen(QtGui.QPen(color, pen_width))
+    
+    # 塗りつぶし設定
+    if "_fill" in t:
+        painter.setBrush(QtGui.QBrush(color))
+    else:
+        painter.setBrush(QtCore.Qt.NoBrush)
+
+    # 各形状の描画
+    if "rect" in t:
+        painter.drawRect(sr)
+    elif "circle" in t:
+        painter.drawEllipse(sr)
     elif t == "double_circle":
         painter.drawEllipse(sr)
         inner = sr.adjusted(sr.width()*0.2, sr.height()*0.2, -sr.width()*0.2, -sr.height()*0.2)
         painter.drawEllipse(inner)
     elif t == "cross":
         cx, cy = sr.center().x(), sr.center().y()
-        painter.drawLine(sr.left(), cy, sr.right(), cy); painter.drawLine(cx, sr.top(), cx, sr.bottom())
+        painter.drawLine(sr.left(), cy, sr.right(), cy)
+        painter.drawLine(cx, sr.top(), cx, sr.bottom())
     elif "diamond" in t:
-        poly = QtGui.QPolygon([QtCore.QPoint(sr.center().x(), sr.top()), QtCore.QPoint(sr.right(), sr.center().y()), QtCore.QPoint(sr.center().x(), sr.bottom()), QtCore.QPoint(sr.left(), sr.center().y())])
-        if "fill" in t: painter.setBrush(color)
-        painter.drawPolygon(poly); painter.setBrush(QtCore.Qt.NoBrush)
+        poly = QtGui.QPolygon([
+            QtCore.QPoint(sr.center().x(), sr.top()), 
+            QtCore.QPoint(sr.right(), sr.center().y()), 
+            QtCore.QPoint(sr.center().x(), sr.bottom()), 
+            QtCore.QPoint(sr.left(), sr.center().y())
+        ])
+        painter.drawPolygon(poly)
     elif "tri_" in t:
         pts = []
         if "up" in t: pts = [sr.bottomLeft(), sr.bottomRight(), QtCore.QPoint(sr.center().x(), sr.top())]
@@ -50,16 +64,19 @@ def draw_shape(painter, t, sr, color, is_selected=False):
         elif "left" in t: pts = [sr.topRight(), sr.bottomRight(), QtCore.QPoint(sr.left(), sr.center().y())]
         elif "right" in t: pts = [sr.topLeft(), sr.bottomLeft(), QtCore.QPoint(sr.right(), sr.center().y())]
         if pts:
-            poly = QtGui.QPolygon(pts)
-            if "fill" in t: painter.setBrush(color)
-            painter.drawPolygon(poly); painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawPolygon(QtGui.QPolygon(pts))
     elif "star" in t:
-        poly = QtGui.QPolygon(); center = sr.center(); ro = min(sr.width(), sr.height())/2; ri = ro/2.5
+        poly = QtGui.QPolygon()
+        center = sr.center()
+        ro = min(sr.width(), sr.height())/2
+        ri = ro/2.5
         for j in range(10):
-            r = ro if j%2==0 else ri; angle = (j*36-90)*math.pi/180
+            r = ro if j%2==0 else ri
+            angle = (j*36-90)*math.pi/180
             poly << QtCore.QPoint(center.x()+r*math.cos(angle), center.y()+r*math.sin(angle))
-        if "fill" in t: painter.setBrush(color)
-        painter.drawPolygon(poly); painter.setBrush(QtCore.Qt.NoBrush)
+        painter.drawPolygon(poly)
+    
+    painter.setBrush(QtCore.Qt.NoBrush)
 
 def create_shape_icon(shape_type, color):
     pixmap = QtGui.QPixmap(16, 16); pixmap.fill(QtCore.Qt.transparent)
@@ -87,8 +104,9 @@ class ListColorItem(QtWidgets.QWidget):
     color_changed = QtCore.Signal(object, QtGui.QColor); rect_changed = QtCore.Signal(object, str, int)
     names_changed = QtCore.Signal(object, list); type_changed = QtCore.Signal(object, str); next_json_changed = QtCore.Signal(object, str)
 
-    def __init__(self, names, rect, color, shape_type, next_json, parent=None):
-        super().__init__(parent); self.block_signals = False; self.current_color = QtGui.QColor(color)
+    def __init__(self, reg_item, parent=None):
+        super().__init__(parent); self.block_signals = False
+        self.associated_reg = reg_item; self.current_color = reg_item.color
         layout = QtWidgets.QHBoxLayout(self); layout.setContentsMargins(2, 2, 2, 2); layout.setSpacing(4)
         layout.addSpacing(40) 
         self.names_edit = QtWidgets.QLineEdit(); self.names_edit.editingFinished.connect(self.on_ui_data_changed); layout.addWidget(self.names_edit, 1)
@@ -102,7 +120,7 @@ class ListColorItem(QtWidgets.QWidget):
             sb = MaxStyleSpinBox(); sb.valueChanged.connect(lambda val, k=key: self.on_rect_ui_changed(k, val))
             lbl = DraggableLabel(lbl_t, sb); self.labels.append(lbl); layout.addWidget(lbl); layout.addWidget(sb); self.spins[key] = sb
         self.color_btn = QtWidgets.QPushButton("■"); self.color_btn.setFixedSize(18, 18); self.color_btn.clicked.connect(self.pick_new_color); layout.addWidget(self.color_btn)
-        self.update_ui_silently(names, rect, self.current_color, shape_type, next_json)
+        self.update_ui_silently(reg_item.names, reg_item.rect, self.current_color, reg_item.shape_type, reg_item.next_json)
 
     def update_ui_silently(self, names, rect, color, shape_type, next_json):
         self.block_signals = True; self.current_color = color
@@ -167,8 +185,7 @@ class ImageCanvas(QtWidgets.QLabel):
                 self.is_dragging = True; self.drag_last_raw = raw; self.setCursor(QtCore.Qt.SizeAllCursor)
             else: self.region_clicked.emit(hit, is_mod)
         else: 
-            if self.mode == "setup":
-                self.start_pos = pos; self.temp_rect = QtCore.QRect()
+            if self.mode == "setup": self.start_pos = pos; self.temp_rect = QtCore.QRect()
             self.request_deselect.emit(is_mod)
 
     def mouseMoveEvent(self, event):
@@ -184,8 +201,7 @@ class ImageCanvas(QtWidgets.QLabel):
             self.temp_rect = QtCore.QRect(self.start_pos, event.position().toPoint()).normalized(); self.update()
 
     def mouseReleaseEvent(self, e): 
-        self.start_pos = self.last_pan_pos = None; self.is_dragging = False
-        self.setCursor(QtCore.Qt.ArrowCursor); self.update()
+        self.start_pos = self.last_pan_pos = None; self.is_dragging = False; self.setCursor(QtCore.Qt.ArrowCursor); self.update()
 
     def wheelEvent(self, e):
         self.scale *= (1.1 if e.angleDelta().y() > 0 else 0.9); self.scale = max(0.1, min(self.scale, 10.0)); self.update_canvas_size(); self.update()
@@ -208,7 +224,12 @@ class PickerEditor(QtWidgets.QWidget):
         self.btn_mode = QtWidgets.QPushButton("Switch to SELECTOR Mode"); self.btn_mode.setCheckable(True); self.btn_mode.setFixedHeight(35); self.btn_mode.toggled.connect(self.toggle_mode); left_v.addWidget(self.btn_mode)
         right_w = QtWidgets.QWidget(); right_panel = QtWidgets.QVBoxLayout(right_w); right_panel.setContentsMargins(0,0,0,0)
         self.setup_group = QtWidgets.QGroupBox("Registration"); setup_v = QtWidgets.QVBoxLayout(self.setup_group)
-        self.list_widget = QtWidgets.QListWidget(); self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.list_widget.setDragEnabled(True); self.list_widget.setAcceptDrops(True)
+        self.list_widget.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        self.list_widget.setDefaultDropAction(QtCore.Qt.MoveAction)
+        self.list_widget.model().rowsMoved.connect(self.sync_data_order_from_ui)
         self.list_widget.itemSelectionChanged.connect(self.sync_selection_to_canvas); setup_v.addWidget(self.list_widget)
         get_h = QtWidgets.QHBoxLayout(); self.edit_names = QtWidgets.QLineEdit()
         btn_get = QtWidgets.QPushButton("Get Selected"); btn_get.clicked.connect(lambda: self.edit_names.setText(", ".join([o.name for o in list(mxs.selection)])))
@@ -221,6 +242,13 @@ class PickerEditor(QtWidgets.QWidget):
         self.splitter.addWidget(left_w); self.splitter.addWidget(right_w); self.splitter.setStretchFactor(0, 1); self.splitter.setStretchFactor(1, 1); main_v.addWidget(self.splitter)
         self.canvas.request_deselect.connect(lambda mod: (self.list_widget.clearSelection() if not mod else None))
         self.canvas.region_clicked.connect(self.handle_canvas_region_click); self.canvas.multi_region_moved.connect(self.handle_multi_move); self.canvas.pan_requested.connect(self.handle_pan)
+
+    def sync_data_order_from_ui(self, *args):
+        new_items = []
+        for i in range(self.list_widget.count()):
+            it = self.list_widget.item(i); w = self.list_widget.itemWidget(it)
+            if hasattr(w, 'associated_reg'): new_items.append(w.associated_reg)
+        self.canvas.registered_items = new_items; self.sync_selection_to_canvas(); self.canvas.update()
 
     def _get_target_rows(self, widget):
         row = -1
@@ -301,17 +329,12 @@ class PickerEditor(QtWidgets.QWidget):
     def do_register(self):
         names = [n.strip() for n in self.edit_names.text().split(",") if n.strip()] or ["Control"]
         s = self.canvas.scale; r = self.canvas.temp_rect
-        if r.isNull() or r.width() < 2 or r.height() < 2:
-            raw = [10, 10, 40, 40]
-        else:
-            raw = [int(r.x()/s), int(r.y()/s), int(r.width()/s), int(r.height()/s)]
-        reg = ClickRegion(names, raw, self.last_used_color); self.canvas.registered_items.append(reg)
-        self.add_list_item(names, reg.rect, reg.color, reg.shape_type)
-        # 登録完了後に破線を消去
+        raw = [int(r.x()/s), int(r.y()/s), int(r.width()/s), int(r.height()/s)] if not r.isNull() else [10, 10, 40, 40]
+        reg = ClickRegion(names, raw, self.last_used_color); self.canvas.registered_items.append(reg); self.add_list_item(reg)
         self.canvas.temp_rect = QtCore.QRect(); self.canvas.update()
-    def add_list_item(self, names, rect, color, shape_type, next_json=""):
-        it = QtWidgets.QListWidgetItem(self.list_widget); w = ListColorItem(names, rect, color, shape_type, next_json)
-        w.rect_changed.connect(self.handle_rect_sync); w.color_changed.connect(self.handle_color_sync); w.type_changed.connect(self.handle_type_sync)
+    def add_list_item(self, reg):
+        it = QtWidgets.QListWidgetItem(self.list_widget)
+        w = ListColorItem(reg); w.rect_changed.connect(self.handle_rect_sync); w.color_changed.connect(self.handle_color_sync); w.type_changed.connect(self.handle_type_sync)
         w.names_changed.connect(self.handle_names_sync); w.next_json_changed.connect(self.handle_next_json_sync)
         it.setSizeHint(w.sizeHint()); self.list_widget.addItem(it); self.list_widget.setItemWidget(it, w)
     def sync_selection_to_canvas(self): self.canvas.selected_indices = {i.row() for i in self.list_widget.selectedIndexes()}; self.canvas.update()
@@ -330,8 +353,7 @@ class PickerEditor(QtWidgets.QWidget):
                 path = os.path.basename(i.next_json) if i.next_json else ""
                 data = {"names": i.names, "rect": list(i.rect.getRect()), "color": list(i.color.getRgb()), "shape_type": i.shape_type, "next_json": path}
                 lines.append(json.dumps(data, ensure_ascii=False))
-            with open(p, 'w', encoding='utf-8') as f:
-                f.write("[\n" + ",\n".join(lines) + "\n]")
+            with open(p, 'w', encoding='utf-8') as f: f.write("[\n" + ",\n".join(lines) + "\n]")
             self.current_json_path = p; self.setWindowTitle(f"Picker: {os.path.basename(p)}")
 
     def load_json(self): 
@@ -346,7 +368,7 @@ class PickerEditor(QtWidgets.QWidget):
                 nj = d.get("next_json", ""); full = os.path.join(base, nj) if nj else ""
                 st = d.get("shape_type", d.get("type", "rect"))
                 reg = ClickRegion(d.get("names", []), d["rect"], d["color"], st, full)
-                self.canvas.registered_items.append(reg); self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type, nj)
+                self.canvas.registered_items.append(reg); self.add_list_item(reg)
             self.canvas.update(); self.current_json_path = p; self.setWindowTitle(f"Picker: {os.path.basename(p)}")
 
 if __name__ == "__main__":

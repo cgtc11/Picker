@@ -28,52 +28,69 @@ SHAPE_TYPES = [
     "tri_right", "tri_right_fill", "double_circle", "star", "star_fill"
 ]
 
-# Maya 側の IKFK 切り替え属性名（表示名）
-IKFK_ATTR = "Switch Ik Fk"
-
 # ------------------------------------------------------------------ #
-#  IKFK ユーティリティ
+#  アクション実行
 # ------------------------------------------------------------------ #
 
-def _resolve_attr(obj):
+def _resolve_attr(node, attr):
     """
-    "Swittch IK FK" という表示名を持つ属性の内部名を返す。
-    Maya の setAttr/getAttr はスペース入り表示名を直接受け付けないため、
-    listAttr でスキャンして一致する longName を探す。
-    見つからなければ None。
+    attr をそのまま試し、失敗したら nice name として listAttr でスキャンして
+    一致する内部名を返す。どちらでも見つからなければ None。
+    Maya の getAttr/setAttr はスペース入り nice name を直接受け付けないための対処。
     """
+    # まず内部名として直接確認
     try:
-        attrs = cmds.listAttr(obj, userDefined=True) or []
-        for a in attrs:
+        cmds.getAttr(f"{node}.{attr}")
+        return attr  # 成功 → そのまま使える
+    except Exception:
+        pass
+    # nice name として検索
+    try:
+        for a in (cmds.listAttr(node, userDefined=True) or []):
             try:
-                nice = cmds.attributeQuery(a, node=obj, niceName=True)
-                if nice == IKFK_ATTR:
-                    return a          # 内部名（スペースなし）を返す
+                if cmds.attributeQuery(a, node=node, niceName=True) == attr:
+                    return a
             except Exception:
                 pass
-            # longName 自体が一致する場合も拾う（念のため）
-            if a == IKFK_ATTR:
+            if a == attr:
                 return a
     except Exception:
         pass
     return None
 
-def toggle_ikfk(obj):
+def execute_action(action, targets):
     """
-    obj の IKFK 属性をトグルする。
-    0 → 1 (FK)、1 → 0 (IK)
-    戻り値: (成功した場合 True, エラーメッセージ or None)
+    action dict と対象ノードリストを受け取り、処理を実行する。
+    targets は ClickRegion.select_names から渡す（UI で重複定義しない）。
+    attr には内部名・nice name どちらを書いても動作する。
+    現在対応:
+        attribute_toggle : targets の各ノードの attr を values[0] ⇄ values[1] でトグル
+    戻り値: (成功 True/False, エラーメッセージ or None)
     """
-    attr = _resolve_attr(obj)
-    if attr is None:
-        return False, f"{obj}: 属性 '{IKFK_ATTR}' が見つかりません"
-    full = f"{obj}.{attr}"
-    try:
-        val = cmds.getAttr(full)
-        cmds.setAttr(full, 0 if val >= 0.5 else 1)
-        return True, None
-    except Exception as e:
-        return False, str(e)
+    if not action:
+        return False, "アクションが定義されていません"
+    atype = action.get("type", "attribute_toggle")
+    if atype == "attribute_toggle":
+        attr   = action.get("attr", "")
+        values = action.get("values", [0, 1])
+        if not attr:
+            return False, "attr が空です"
+        errors = []
+        for target in targets:
+            resolved = _resolve_attr(target, attr)
+            if resolved is None:
+                errors.append(f"{target}: アトリビュート '{attr}' が見つかりません")
+                continue
+            full = f"{target}.{resolved}"
+            try:
+                val = cmds.getAttr(full)
+                mid = (float(values[0]) + float(values[1])) / 2.0
+                new_val = values[0] if float(val) >= mid else values[1]
+                cmds.setAttr(full, new_val)
+            except Exception as e:
+                errors.append(str(e))
+        return (False, "\n".join(errors)) if errors else (True, None)
+    return False, f"不明なアクションタイプ: {atype}"
 
 # ------------------------------------------------------------------ #
 #  図形描画
@@ -158,67 +175,74 @@ class DragLabel(QtWidgets.QLabel):
 
 class ClickRegion:
     """
-    names に ".Switch" サフィックスを含む名前があった場合、
-    そのエントリは「IKFK スイッチフラグ」として扱う。
+    右クリックアクションは action dict で定義する。
+    例:
+        {
+            "type":   "attribute_toggle",
+            "target": "arm_ctrl",
+            "attr":   "ikFkSwitch",
+            "values": [0, 1]
+        }
+    action が None の場合は右クリック無効。
 
-    例: names = ["arm_IK_ctrl", "arm_sw_ctrl.Switch"]
-        → select_names  = ["arm_IK_ctrl", "arm_sw_ctrl"]   (左クリック選択)
-        → switch_targets = ["arm_sw_ctrl"]                   (右クリックでトグル)
+    後方互換のため load_json 内で旧 .Switch サフィックス形式を自動変換する。
     """
-    def __init__(self, names, rect_data, color, shape_type="rect", next_json=""):
+    def __init__(self, names, rect_data, color, shape_type="rect", next_json="", action=None):
         self.names      = names if isinstance(names, list) else [names]
         self.rect       = QtCore.QRect(*rect_data)
         self.color      = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
         self.shape_type = shape_type
         self.next_json  = next_json
+        self.action     = action   # dict or None
 
     @property
     def has_switch(self):
-        return any(n.endswith(".Switch") for n in self.names)
-
-    @property
-    def switch_targets(self):
-        """.Switch サフィックスを除いたオブジェクト名（IKFK トグル対象）"""
-        return [n[:-len(".Switch")] for n in self.names if n.endswith(".Switch")]
+        """アクションが有効に定義されているか（キャンバスバッジ表示などに使用）"""
+        return self.action is not None
 
     @property
     def select_names(self):
-        """Maya 選択に使う名前リスト（全員、.Switch サフィックスだけ除去）"""
-        return [n[:-len(".Switch")] if n.endswith(".Switch") else n for n in self.names]
+        return list(self.names)
 
 # ------------------------------------------------------------------ #
 #  ListColorItem
 # ------------------------------------------------------------------ #
 
 class ListColorItem(QtWidgets.QWidget):
-    color_changed    = QtCore.Signal(int, QtGui.QColor)
-    rect_changed     = QtCore.Signal(int, str, int)
-    names_changed    = QtCore.Signal(int, list)
-    type_changed     = QtCore.Signal(int, str)
+    color_changed     = QtCore.Signal(int, QtGui.QColor)
+    rect_changed      = QtCore.Signal(int, str, int)
+    names_changed     = QtCore.Signal(int, list)
+    type_changed      = QtCore.Signal(int, str)
     next_json_changed = QtCore.Signal(int, str)
+    action_changed    = QtCore.Signal(int, object)  # index, action dict or None
+    layout_changed    = QtCore.Signal(int)           # サイズヒント更新トリガー
 
-    def __init__(self, names, rect, color, shape_type, next_json, index, parent=None):
+    def __init__(self, names, rect, color, shape_type, next_json, action, index, parent=None):
         super().__init__(parent)
         self.index = index; self.block_signals = False
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(0, 2, 5, 2); layout.setSpacing(3)
-        layout.addSpacing(40)
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 2, 5, 2); outer.setSpacing(1)
+
+        # ── 上段（既存レイアウト完全保持） ────────────────────────────
+        top = QtWidgets.QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0); top.setSpacing(3)
+        top.addSpacing(40)
 
         display_text = os.path.basename(next_json) if next_json else ", ".join(names)
         self.names_edit = QtWidgets.QLineEdit(display_text)
-        self._update_switch_style(display_text)
         self.names_edit.editingFinished.connect(self.on_ui_data_changed)
-        layout.addWidget(self.names_edit, 1)
+        top.addWidget(self.names_edit, 1)
 
         self.btn_path = QtWidgets.QPushButton("..."); self.btn_path.setFixedWidth(22)
-        self.btn_path.clicked.connect(self.browse_path); layout.addWidget(self.btn_path)
+        self.btn_path.clicked.connect(self.browse_path); top.addWidget(self.btn_path)
 
         self.type_combo = QtWidgets.QComboBox()
         self.type_combo.setIconSize(QtCore.QSize(16, 16)); self.type_combo.setFixedWidth(55)
         for st in SHAPE_TYPES: self.type_combo.addItem(create_shape_icon(st, color), "", st)
         if shape_type in SHAPE_TYPES: self.type_combo.setCurrentIndex(SHAPE_TYPES.index(shape_type))
         self.type_combo.currentIndexChanged.connect(self.on_type_ui_changed)
-        layout.addWidget(self.type_combo)
+        top.addWidget(self.type_combo)
 
         self.spins = {}; self.labels = []
         for lbl_t, key in [("X","x"),("Y","y"),("W","w"),("H","h")]:
@@ -226,20 +250,98 @@ class ListColorItem(QtWidgets.QWidget):
             sb.setRange(-20000, 20000); sb.setFixedWidth(40)
             sb.valueChanged.connect(lambda val, k=key: self.on_rect_ui_changed(k, val))
             lbl = DragLabel(lbl_t, sb); lbl.setFixedWidth(12)
-            self.labels.append(lbl); layout.addWidget(lbl); layout.addWidget(sb); self.spins[key] = sb
+            self.labels.append(lbl); top.addWidget(lbl); top.addWidget(sb); self.spins[key] = sb
 
         self.sync_spins(rect)
         self.color_btn = QtWidgets.QPushButton("■"); self.color_btn.setFixedSize(20, 20)
         self.set_btn_color(color); self.color_btn.clicked.connect(self.pick_new_color)
-        layout.addWidget(self.color_btn)
+        top.addWidget(self.color_btn)
 
-    # .Switch フラグがあるとき名前欄を黄色に
-    def _update_switch_style(self, text):
-        if ".Switch" in text:
-            self.names_edit.setStyleSheet(
-                "QLineEdit { color: #ffcc44; background-color: #1a1a1a; border: 1px solid #776622; }")
+        # Action 折りたたみトグルボタン
+        self.btn_action_toggle = QtWidgets.QPushButton("▶ Action")
+        self.btn_action_toggle.setCheckable(True)
+        self.btn_action_toggle.setFixedWidth(65)
+        self.btn_action_toggle.setStyleSheet(
+            "QPushButton { color: #777; font-size: 11px; }"
+            "QPushButton:checked { color: #ffcc44; border-color: #776622; }")
+        self.btn_action_toggle.toggled.connect(self._on_action_toggle)
+        top.addWidget(self.btn_action_toggle)
+
+        outer.addLayout(top)
+
+        # ── アクションパネル（折りたたみ） ───────────────────────────
+        self.action_panel = QtWidgets.QFrame()
+        self.action_panel.setStyleSheet(
+            "QFrame { background-color: #1e1e1e; border-top: 1px solid #3a3a3a; }")
+        ap = QtWidgets.QHBoxLayout(self.action_panel)
+        ap.setContentsMargins(44, 3, 5, 3); ap.setSpacing(4)
+
+        ap.addWidget(QtWidgets.QLabel("Attr:"))
+        self.action_attr_edit = QtWidgets.QLineEdit()
+        self.action_attr_edit.setPlaceholderText("attr name")
+        self.action_attr_edit.setFixedWidth(130)
+        self.action_attr_edit.editingFinished.connect(self._on_action_changed)
+        ap.addWidget(self.action_attr_edit)
+
+        ap.addWidget(QtWidgets.QLabel("Val:"))
+        self.action_val0_edit = QtWidgets.QLineEdit("0")
+        self.action_val0_edit.setFixedWidth(35)
+        self.action_val0_edit.editingFinished.connect(self._on_action_changed)
+        ap.addWidget(self.action_val0_edit)
+
+        ap.addWidget(QtWidgets.QLabel("⇄"))
+        self.action_val1_edit = QtWidgets.QLineEdit("1")
+        self.action_val1_edit.setFixedWidth(35)
+        self.action_val1_edit.editingFinished.connect(self._on_action_changed)
+        ap.addWidget(self.action_val1_edit)
+
+        ap.addStretch()
+        self.action_panel.setVisible(False)
+        outer.addWidget(self.action_panel)
+
+        # アクション初期値をロード
+        if action:
+            self._load_action(action)
+
+    # ── アクションパネル ─────────────────────────────────────────────
+
+    def _on_action_toggle(self, checked):
+        self.action_panel.setVisible(checked)
+        self.btn_action_toggle.setText("▼ Action" if checked else "▶ Action")
+        if not checked:
+            self.action_changed.emit(self.index, None)
         else:
-            self.names_edit.setStyleSheet("")
+            self._on_action_changed()
+        self.layout_changed.emit(self.index)
+
+    def _load_action(self, action):
+        """既存 action dict をパネルの各フィールドへ反映する"""
+        self.block_signals = True
+        self.action_attr_edit.setText(action.get("attr", ""))
+        vals = action.get("values", [0, 1])
+        self.action_val0_edit.setText(str(vals[0]) if len(vals) > 0 else "0")
+        self.action_val1_edit.setText(str(vals[1]) if len(vals) > 1 else "1")
+        self.block_signals = False
+        self.btn_action_toggle.setChecked(True)
+
+    def _on_action_changed(self, *args):
+        if self.block_signals: return
+
+        def _num(s):
+            try:
+                v = float(s)
+                return int(v) if v == int(v) else v
+            except Exception:
+                return 0
+
+        action = {
+            "type":   "attribute_toggle",
+            "attr":   self.action_attr_edit.text().strip(),
+            "values": [_num(self.action_val0_edit.text()), _num(self.action_val1_edit.text())]
+        }
+        self.action_changed.emit(self.index, action)
+
+    # ── 既存ヘルパー（変更なし） ─────────────────────────────────────
 
     def browse_path(self):
         p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select JSON", "", "*.json")
@@ -247,7 +349,6 @@ class ListColorItem(QtWidgets.QWidget):
 
     def on_ui_data_changed(self):
         text = self.names_edit.text()
-        self._update_switch_style(text)
         if text.endswith(".json"):
             rel = os.path.basename(text)
             if text != rel: self.names_edit.setText(rel)
@@ -282,10 +383,14 @@ class ListColorItem(QtWidgets.QWidget):
         if c.isValid(): self.set_btn_color(c); self.color_changed.emit(self.index, c)
 
     def set_edit_enabled(self, e):
+        """セレクターモード切り替え時に編集フィールドを有効/無効化する。
+        btn_action_toggle は常に有効（セレクターモードでもパネルを参照できる）。"""
         self.names_edit.setEnabled(e); self.color_btn.setEnabled(e)
         self.type_combo.setEnabled(e); self.btn_path.setEnabled(e)
         for sb in self.spins.values(): sb.setEnabled(e)
         for lb in self.labels: lb.setEnabled(e)
+        for w in (self.action_attr_edit, self.action_val0_edit, self.action_val1_edit):
+            w.setEnabled(e)
 
 # ------------------------------------------------------------------ #
 #  DraggableListWidget
@@ -301,12 +406,12 @@ class DraggableListWidget(QtWidgets.QListWidget):
 # ------------------------------------------------------------------ #
 
 class ImageCanvas(QtWidgets.QLabel):
-    request_deselect   = QtCore.Signal(bool)
-    region_clicked     = QtCore.Signal(int, bool)
-    region_right_clicked = QtCore.Signal(int)          # ← 右クリック（インデックスのみ）
-    multi_region_moved = QtCore.Signal(list, int, int)
-    file_dropped       = QtCore.Signal(str)
-    pan_requested      = QtCore.Signal(QtCore.QPoint)
+    request_deselect     = QtCore.Signal(bool)
+    region_clicked       = QtCore.Signal(int, bool)
+    region_right_clicked = QtCore.Signal(int)
+    multi_region_moved   = QtCore.Signal(list, int, int)
+    file_dropped         = QtCore.Signal(str)
+    pan_requested        = QtCore.Signal(QtCore.QPoint)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -338,13 +443,8 @@ class ImageCanvas(QtWidgets.QLabel):
                 item.rect.x() * self.scale, item.rect.y() * self.scale,
                 item.rect.width() * self.scale, item.rect.height() * self.scale)
             draw_shape(painter, item.shape_type, sr, item.color, i in self.selected_indices)
-            # .Switch フラグがある場合は右上に小バッジ
             if item.has_switch:
                 self._draw_switch_badge(painter, sr)
-
-        if self.mode == "setup" and not self.temp_rect.isNull():
-            painter.setPen(QtGui.QPen(QtCore.Qt.red, 1, QtCore.Qt.DashLine))
-            painter.drawRect(self.temp_rect)
 
     def _draw_switch_badge(self, painter, sr):
         bw = max(10, int(sr.width() * 0.28)); bh = max(8, int(sr.height() * 0.28))
@@ -369,7 +469,6 @@ class ImageCanvas(QtWidgets.QLabel):
                 (event.button() == QtCore.Qt.LeftButton and mod & QtCore.Qt.AltModifier):
             self.last_pan_pos = event.globalPos(); self.setCursor(QtCore.Qt.ClosedHandCursor); return
 
-        # クリックされたリージョンを検索
         idx = next((i for i, r in enumerate(self.registered_items) if r.rect.contains(raw)), -1)
 
         # ---- 右クリック ----
@@ -381,7 +480,6 @@ class ImageCanvas(QtWidgets.QLabel):
         # ---- 左クリック ----
         if idx != -1:
             item = self.registered_items[idx]
-            # next_json があれば JSON 遷移（セレクターモードのみ）
             if self.mode == "selector" and item.next_json and not is_mod:
                 target = item.next_json
                 if not os.path.isabs(target) and self.window().current_json_path:
@@ -393,7 +491,6 @@ class ImageCanvas(QtWidgets.QLabel):
                 self.is_dragging_items = True; self.drag_start_pt = raw
             else:
                 self.region_clicked.emit(idx, is_mod)
-                # セレクターモード: select_names で選択（.Switch サフィックスは除去済み）
                 if self.mode == "selector":
                     sel = item.select_names
                     if sel: cmds.select(sel, toggle=is_mod, replace=not is_mod)
@@ -491,26 +588,23 @@ class MayaPickerEditor(QtWidgets.QWidget):
         # シグナル接続
         self.canvas.request_deselect.connect(lambda mod: (self.list_widget.clearSelection() if not mod else None))
         self.canvas.region_clicked.connect(self.handle_canvas_region_click)
-        self.canvas.region_right_clicked.connect(self.handle_ikfk_toggle)   # ← IKFK トグル
+        self.canvas.region_right_clicked.connect(self.handle_action_execute)
         self.canvas.multi_region_moved.connect(self.handle_multi_move)
         self.canvas.file_dropped.connect(self.handle_drop_file)
         self.canvas.pan_requested.connect(self.handle_pan)
 
     # ---------------------------------------------------------------- #
-    #  IKFK トグル（右クリック）
+    #  アクション実行（右クリック）
     # ---------------------------------------------------------------- #
 
-    def handle_ikfk_toggle(self, idx):
-        """右クリックされたリージョンの .Switch 対象をトグルする"""
+    def handle_action_execute(self, idx):
+        """右クリックされたリージョンの action を実行する。target は select_names から自動取得。"""
         reg = self.canvas.registered_items[idx]
         if not reg.has_switch:
             return
-        errors = []
-        for obj in reg.switch_targets:
-            ok, msg = toggle_ikfk(obj)
-            if not ok: errors.append(msg)
-        if errors:
-            QtWidgets.QMessageBox.warning(self, "IKFK Switch", "\n".join(errors))
+        ok, msg = execute_action(reg.action, reg.select_names)
+        if not ok and msg:
+            QtWidgets.QMessageBox.warning(self, "Action Error", msg)
 
     # ---------------------------------------------------------------- #
     #  既存メソッド
@@ -570,18 +664,23 @@ class MayaPickerEditor(QtWidgets.QWidget):
         names = [n.strip() for n in self.edit_names.text().split(",") if n.strip()] or ["Control"]
         reg = ClickRegion(names, raw, self.last_used_color)
         self.canvas.registered_items.append(reg)
-        self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type)
+        self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type, "", None)
         self.canvas.temp_rect = QtCore.QRect(); self.canvas.update()
 
-    def add_list_item(self, names, rect, color, shape_type, next_json=""):
+    def add_list_item(self, names, rect, color, shape_type, next_json="", action=None):
         it = QtWidgets.QListWidgetItem(self.list_widget)
-        w = ListColorItem(names, rect, color, shape_type, next_json, self.list_widget.count() - 1)
+        w = ListColorItem(names, rect, color, shape_type, next_json, action,
+                          self.list_widget.count() - 1)
         w.names_changed.connect(lambda i, n: setattr(self.canvas.registered_items[i], 'names', n))
         w.rect_changed.connect(self.handle_rect_sync)
         w.color_changed.connect(self.handle_color_sync)
         w.type_changed.connect(self.handle_type_sync)
         w.next_json_changed.connect(lambda i, p: setattr(self.canvas.registered_items[i], 'next_json', p))
-        it.setSizeHint(w.sizeHint()); self.list_widget.addItem(it); self.list_widget.setItemWidget(it, w)
+        w.action_changed.connect(lambda i, a: setattr(self.canvas.registered_items[i], 'action', a))
+        # アクションパネルの開閉でリストアイテムの高さを更新
+        w.layout_changed.connect(lambda _i: it.setSizeHint(w.sizeHint()))
+        it.setSizeHint(w.sizeHint())
+        self.list_widget.addItem(it); self.list_widget.setItemWidget(it, w)
         w.set_edit_enabled(not self.btn_mode.isChecked())
 
     def handle_rect_sync(self, idx, k, v):
@@ -637,25 +736,52 @@ class MayaPickerEditor(QtWidgets.QWidget):
             lines = []
             for i in self.canvas.registered_items:
                 path = os.path.basename(i.next_json) if i.next_json else ""
-                d = {"names": i.names, "rect": list(i.rect.getRect()),
-                     "color": list(i.color.getRgb()), "shape_type": i.shape_type, "next_json": path}
+                d = {
+                    "names":      i.names,
+                    "rect":       list(i.rect.getRect()),
+                    "color":      list(i.color.getRgb()),
+                    "shape_type": i.shape_type,
+                    "next_json":  path,
+                    "action":     i.action   # None or dict
+                }
                 lines.append(json.dumps(d, ensure_ascii=False))
             with open(p, 'w', encoding='utf-8') as f:
                 f.write("[\n" + ",\n".join(lines) + "\n]")
             self.current_json_path = p
 
     def load_json(self, p=None):
-        if not p: p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open JSON", self.current_json_path, "*.json")
+        if not p:
+            p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open JSON", self.current_json_path, "*.json")
         if p and os.path.exists(p):
-            self.current_json_path = p; base_dir = os.path.dirname(p)
+            self.current_json_path = p
+            base_dir = os.path.dirname(p)
             data = json.load(open(p, 'r', encoding='utf-8'))
             self.canvas.registered_items = []; self.list_widget.clear()
             for d in data:
-                path = d.get("next_json", ""); rel = os.path.basename(path) if path else ""
+                path = d.get("next_json", "")
+                rel  = os.path.basename(path) if path else ""
                 full = os.path.join(base_dir, rel) if rel else ""
-                reg = ClickRegion(d.get("names", []), d["rect"], d["color"], d.get("shape_type", "rect"), full)
+
+                names  = d.get("names", [])
+                action = d.get("action", None)
+
+                # ── 後方互換: 旧 .Switch サフィックス形式を自動変換 ──
+                if action is None:
+                    sw = [n for n in names if n.endswith(".Switch")]
+                    if sw:
+                        obj = sw[0][:-len(".Switch")]
+                        action = {
+                            "type":   "attribute_toggle",
+                            "target": obj,
+                            "attr":   "",   # 旧形式は attr 不明のため空欄
+                            "values": [0, 1]
+                        }
+                        names = [n[:-len(".Switch")] if n.endswith(".Switch") else n for n in names]
+
+                reg = ClickRegion(names, d["rect"], d["color"],
+                                  d.get("shape_type", "rect"), full, action)
                 self.canvas.registered_items.append(reg)
-                self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type, rel)
+                self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type, rel, reg.action)
             self.canvas.update()
 
 

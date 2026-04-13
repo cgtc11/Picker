@@ -29,22 +29,19 @@ SHAPE_TYPES = [
 ]
 
 # ------------------------------------------------------------------ #
-#  アクション実行
+#  アトリビュート解決
 # ------------------------------------------------------------------ #
 
 def _resolve_attr(node, attr):
     """
     attr をそのまま試し、失敗したら nice name として listAttr でスキャンして
     一致する内部名を返す。どちらでも見つからなければ None。
-    Maya の getAttr/setAttr はスペース入り nice name を直接受け付けないための対処。
     """
-    # まず内部名として直接確認
     try:
         cmds.getAttr(f"{node}.{attr}")
-        return attr  # 成功 → そのまま使える
+        return attr
     except Exception:
         pass
-    # nice name として検索
     try:
         for a in (cmds.listAttr(node, userDefined=True) or []):
             try:
@@ -58,13 +55,14 @@ def _resolve_attr(node, attr):
         pass
     return None
 
+# ------------------------------------------------------------------ #
+#  アクション実行
+# ------------------------------------------------------------------ #
+
 def execute_action(action, targets):
     """
-    action dict と対象ノードリストを受け取り、処理を実行する。
-    targets は ClickRegion.select_names から渡す（UI で重複定義しない）。
+    action dict と対象ノードリストを受け取り処理を実行する。
     attr には内部名・nice name どちらを書いても動作する。
-    現在対応:
-        attribute_toggle : targets の各ノードの attr を values[0] ⇄ values[1] でトグル
     戻り値: (成功 True/False, エラーメッセージ or None)
     """
     if not action:
@@ -91,6 +89,37 @@ def execute_action(action, targets):
                 errors.append(str(e))
         return (False, "\n".join(errors)) if errors else (True, None)
     return False, f"不明なアクションタイプ: {atype}"
+
+# ------------------------------------------------------------------ #
+#  表示条件評価
+# ------------------------------------------------------------------ #
+
+def evaluate_visibility(items):
+    """
+    各リージョンの visible_when 条件を評価し item.visible を更新する。
+    visible_when が None のリージョンは常に visible=True。
+    Maya のアトリビュートが取得できない場合も visible=True とする。
+    """
+    for item in items:
+        vw = item.visible_when
+        if not vw:
+            item.visible = True
+            continue
+        target = vw.get("target", "")
+        attr   = vw.get("attr", "")
+        value  = vw.get("value", 0)
+        if not target or not attr:
+            item.visible = True
+            continue
+        resolved = _resolve_attr(target, attr)
+        if resolved is None:
+            item.visible = True
+            continue
+        try:
+            val = cmds.getAttr(f"{target}.{resolved}")
+            item.visible = (abs(float(val) - float(value)) < 0.001)
+        except Exception:
+            item.visible = True
 
 # ------------------------------------------------------------------ #
 #  図形描画
@@ -175,30 +204,29 @@ class DragLabel(QtWidgets.QLabel):
 
 class ClickRegion:
     """
-    右クリックアクションは action dict で定義する。
-    例:
-        {
-            "type":   "attribute_toggle",
-            "target": "arm_ctrl",
-            "attr":   "ikFkSwitch",
-            "values": [0, 1]
-        }
-    action が None の場合は右クリック無効。
-
-    後方互換のため load_json 内で旧 .Switch サフィックス形式を自動変換する。
+    action      : 右クリックで実行するアクション dict（None で無効）
+    visible_when: 表示条件 dict（None で常に表示）
+                  例: {"target": "arm_sw", "attr": "ikFkSwitch", "value": 0}
+    visible     : evaluate_visibility() が更新するランタイムフラグ
     """
-    def __init__(self, names, rect_data, color, shape_type="rect", next_json="", action=None):
-        self.names      = names if isinstance(names, list) else [names]
-        self.rect       = QtCore.QRect(*rect_data)
-        self.color      = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
-        self.shape_type = shape_type
-        self.next_json  = next_json
-        self.action     = action   # dict or None
+    def __init__(self, names, rect_data, color, shape_type="rect",
+                 next_json="", action=None, visible_when=None):
+        self.names        = names if isinstance(names, list) else [names]
+        self.rect         = QtCore.QRect(*rect_data)
+        self.color        = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
+        self.shape_type   = shape_type
+        self.next_json    = next_json
+        self.action       = action        # dict or None
+        self.visible_when = visible_when  # dict or None
+        self.visible      = True          # ランタイムフラグ
 
     @property
     def has_switch(self):
-        """アクションが有効に定義されているか（キャンバスバッジ表示などに使用）"""
         return self.action is not None
+
+    @property
+    def has_visibility(self):
+        return self.visible_when is not None
 
     @property
     def select_names(self):
@@ -209,15 +237,17 @@ class ClickRegion:
 # ------------------------------------------------------------------ #
 
 class ListColorItem(QtWidgets.QWidget):
-    color_changed     = QtCore.Signal(int, QtGui.QColor)
-    rect_changed      = QtCore.Signal(int, str, int)
-    names_changed     = QtCore.Signal(int, list)
-    type_changed      = QtCore.Signal(int, str)
-    next_json_changed = QtCore.Signal(int, str)
-    action_changed    = QtCore.Signal(int, object)  # index, action dict or None
-    layout_changed    = QtCore.Signal(int)           # サイズヒント更新トリガー
+    color_changed        = QtCore.Signal(int, QtGui.QColor)
+    rect_changed         = QtCore.Signal(int, str, int)
+    names_changed        = QtCore.Signal(int, list)
+    type_changed         = QtCore.Signal(int, str)
+    next_json_changed    = QtCore.Signal(int, str)
+    action_changed       = QtCore.Signal(int, object)
+    visible_when_changed = QtCore.Signal(int, object)
+    layout_changed       = QtCore.Signal(int)
 
-    def __init__(self, names, rect, color, shape_type, next_json, action, index, parent=None):
+    def __init__(self, names, rect, color, shape_type, next_json,
+                 action, visible_when, index, parent=None):
         super().__init__(parent)
         self.index = index; self.block_signals = False
 
@@ -257,19 +287,27 @@ class ListColorItem(QtWidgets.QWidget):
         self.set_btn_color(color); self.color_btn.clicked.connect(self.pick_new_color)
         top.addWidget(self.color_btn)
 
-        # Action 折りたたみトグルボタン
+        # Action トグルボタン
         self.btn_action_toggle = QtWidgets.QPushButton("▶ Action")
-        self.btn_action_toggle.setCheckable(True)
-        self.btn_action_toggle.setFixedWidth(65)
+        self.btn_action_toggle.setCheckable(True); self.btn_action_toggle.setFixedWidth(65)
         self.btn_action_toggle.setStyleSheet(
             "QPushButton { color: #777; font-size: 11px; }"
             "QPushButton:checked { color: #ffcc44; border-color: #776622; }")
         self.btn_action_toggle.toggled.connect(self._on_action_toggle)
         top.addWidget(self.btn_action_toggle)
 
+        # Visible When トグルボタン
+        self.btn_vis_toggle = QtWidgets.QPushButton("▶ Visible")
+        self.btn_vis_toggle.setCheckable(True); self.btn_vis_toggle.setFixedWidth(65)
+        self.btn_vis_toggle.setStyleSheet(
+            "QPushButton { color: #777; font-size: 11px; }"
+            "QPushButton:checked { color: #66ccff; border-color: #224466; }")
+        self.btn_vis_toggle.toggled.connect(self._on_vis_toggle)
+        top.addWidget(self.btn_vis_toggle)
+
         outer.addLayout(top)
 
-        # ── アクションパネル（折りたたみ） ───────────────────────────
+        # ── Action パネル ─────────────────────────────────────────────
         self.action_panel = QtWidgets.QFrame()
         self.action_panel.setStyleSheet(
             "QFrame { background-color: #1e1e1e; border-top: 1px solid #3a3a3a; }")
@@ -278,44 +316,60 @@ class ListColorItem(QtWidgets.QWidget):
 
         ap.addWidget(QtWidgets.QLabel("Attr:"))
         self.action_attr_edit = QtWidgets.QLineEdit()
-        self.action_attr_edit.setPlaceholderText("attr name")
-        self.action_attr_edit.setFixedWidth(130)
+        self.action_attr_edit.setPlaceholderText("attr name"); self.action_attr_edit.setFixedWidth(130)
         self.action_attr_edit.editingFinished.connect(self._on_action_changed)
         ap.addWidget(self.action_attr_edit)
-
         ap.addWidget(QtWidgets.QLabel("Val:"))
-        self.action_val0_edit = QtWidgets.QLineEdit("0")
-        self.action_val0_edit.setFixedWidth(35)
+        self.action_val0_edit = QtWidgets.QLineEdit("0"); self.action_val0_edit.setFixedWidth(35)
         self.action_val0_edit.editingFinished.connect(self._on_action_changed)
         ap.addWidget(self.action_val0_edit)
-
         ap.addWidget(QtWidgets.QLabel("⇄"))
-        self.action_val1_edit = QtWidgets.QLineEdit("1")
-        self.action_val1_edit.setFixedWidth(35)
+        self.action_val1_edit = QtWidgets.QLineEdit("1"); self.action_val1_edit.setFixedWidth(35)
         self.action_val1_edit.editingFinished.connect(self._on_action_changed)
         ap.addWidget(self.action_val1_edit)
-
         ap.addStretch()
         self.action_panel.setVisible(False)
         outer.addWidget(self.action_panel)
 
-        # アクション初期値をロード
-        if action:
-            self._load_action(action)
+        # ── Visible When パネル ───────────────────────────────────────
+        self.vis_panel = QtWidgets.QFrame()
+        self.vis_panel.setStyleSheet(
+            "QFrame { background-color: #1a2030; border-top: 1px solid #224466; }")
+        vp = QtWidgets.QHBoxLayout(self.vis_panel)
+        vp.setContentsMargins(44, 3, 5, 3); vp.setSpacing(4)
 
-    # ── アクションパネル ─────────────────────────────────────────────
+        vp.addWidget(QtWidgets.QLabel("Target:"))
+        self.vis_target_edit = QtWidgets.QLineEdit()
+        self.vis_target_edit.setPlaceholderText("node name"); self.vis_target_edit.setFixedWidth(120)
+        self.vis_target_edit.editingFinished.connect(self._on_vis_changed)
+        vp.addWidget(self.vis_target_edit)
+        vp.addWidget(QtWidgets.QLabel("Attr:"))
+        self.vis_attr_edit = QtWidgets.QLineEdit()
+        self.vis_attr_edit.setPlaceholderText("attr name"); self.vis_attr_edit.setFixedWidth(120)
+        self.vis_attr_edit.editingFinished.connect(self._on_vis_changed)
+        vp.addWidget(self.vis_attr_edit)
+        vp.addWidget(QtWidgets.QLabel("="))
+        self.vis_value_edit = QtWidgets.QLineEdit("0"); self.vis_value_edit.setFixedWidth(35)
+        self.vis_value_edit.editingFinished.connect(self._on_vis_changed)
+        vp.addWidget(self.vis_value_edit)
+        vp.addStretch()
+        self.vis_panel.setVisible(False)
+        outer.addWidget(self.vis_panel)
+
+        # 初期値ロード
+        if action:       self._load_action(action)
+        if visible_when: self._load_vis(visible_when)
+
+    # ── Action パネル ────────────────────────────────────────────────
 
     def _on_action_toggle(self, checked):
         self.action_panel.setVisible(checked)
         self.btn_action_toggle.setText("▼ Action" if checked else "▶ Action")
-        if not checked:
-            self.action_changed.emit(self.index, None)
-        else:
-            self._on_action_changed()
+        if not checked: self.action_changed.emit(self.index, None)
+        else:           self._on_action_changed()
         self.layout_changed.emit(self.index)
 
     def _load_action(self, action):
-        """既存 action dict をパネルの各フィールドへ反映する"""
         self.block_signals = True
         self.action_attr_edit.setText(action.get("attr", ""))
         vals = action.get("values", [0, 1])
@@ -326,14 +380,9 @@ class ListColorItem(QtWidgets.QWidget):
 
     def _on_action_changed(self, *args):
         if self.block_signals: return
-
         def _num(s):
-            try:
-                v = float(s)
-                return int(v) if v == int(v) else v
-            except Exception:
-                return 0
-
+            try: v = float(s); return int(v) if v == int(v) else v
+            except Exception: return 0
         action = {
             "type":   "attribute_toggle",
             "attr":   self.action_attr_edit.text().strip(),
@@ -341,7 +390,36 @@ class ListColorItem(QtWidgets.QWidget):
         }
         self.action_changed.emit(self.index, action)
 
-    # ── 既存ヘルパー（変更なし） ─────────────────────────────────────
+    # ── Visible When パネル ───────────────────────────────────────────
+
+    def _on_vis_toggle(self, checked):
+        self.vis_panel.setVisible(checked)
+        self.btn_vis_toggle.setText("▼ Visible" if checked else "▶ Visible")
+        if not checked: self.visible_when_changed.emit(self.index, None)
+        else:           self._on_vis_changed()
+        self.layout_changed.emit(self.index)
+
+    def _load_vis(self, vw):
+        self.block_signals = True
+        self.vis_target_edit.setText(vw.get("target", ""))
+        self.vis_attr_edit.setText(vw.get("attr", ""))
+        self.vis_value_edit.setText(str(vw.get("value", 0)))
+        self.block_signals = False
+        self.btn_vis_toggle.setChecked(True)
+
+    def _on_vis_changed(self, *args):
+        if self.block_signals: return
+        def _num(s):
+            try: v = float(s); return int(v) if v == int(v) else v
+            except Exception: return 0
+        vw = {
+            "target": self.vis_target_edit.text().strip(),
+            "attr":   self.vis_attr_edit.text().strip(),
+            "value":  _num(self.vis_value_edit.text())
+        }
+        self.visible_when_changed.emit(self.index, vw)
+
+    # ── 既存ヘルパー ─────────────────────────────────────────────────
 
     def browse_path(self):
         p, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select JSON", "", "*.json")
@@ -383,13 +461,12 @@ class ListColorItem(QtWidgets.QWidget):
         if c.isValid(): self.set_btn_color(c); self.color_changed.emit(self.index, c)
 
     def set_edit_enabled(self, e):
-        """セレクターモード切り替え時に編集フィールドを有効/無効化する。
-        btn_action_toggle は常に有効（セレクターモードでもパネルを参照できる）。"""
         self.names_edit.setEnabled(e); self.color_btn.setEnabled(e)
         self.type_combo.setEnabled(e); self.btn_path.setEnabled(e)
         for sb in self.spins.values(): sb.setEnabled(e)
         for lb in self.labels: lb.setEnabled(e)
-        for w in (self.action_attr_edit, self.action_val0_edit, self.action_val1_edit):
+        for w in (self.action_attr_edit, self.action_val0_edit, self.action_val1_edit,
+                  self.vis_target_edit, self.vis_attr_edit, self.vis_value_edit):
             w.setEnabled(e)
 
 # ------------------------------------------------------------------ #
@@ -442,11 +519,28 @@ class ImageCanvas(QtWidgets.QLabel):
             sr = QtCore.QRect(
                 item.rect.x() * self.scale, item.rect.y() * self.scale,
                 item.rect.width() * self.scale, item.rect.height() * self.scale)
-            draw_shape(painter, item.shape_type, sr, item.color, i in self.selected_indices)
-            if item.has_switch:
-                self._draw_switch_badge(painter, sr)
+
+            if self.mode == "selector":
+                if not item.visible:
+                    continue
+                draw_shape(painter, item.shape_type, sr, item.color, i in self.selected_indices)
+                if item.has_switch: self._draw_switch_badge(painter, sr)
+            else:
+                if item.has_visibility and not item.visible:
+                    painter.setOpacity(0.25)
+                    draw_shape(painter, item.shape_type, sr, item.color, i in self.selected_indices)
+                    if item.has_switch: self._draw_switch_badge(painter, sr)
+                    painter.setOpacity(1.0)
+                    continue
+                draw_shape(painter, item.shape_type, sr, item.color, i in self.selected_indices)
+                if item.has_switch: self._draw_switch_badge(painter, sr)
+
+        if self.mode == "setup" and not self.temp_rect.isNull():
+            painter.setPen(QtGui.QPen(QtCore.Qt.red, 1, QtCore.Qt.DashLine))
+            painter.drawRect(self.temp_rect)
 
     def _draw_switch_badge(self, painter, sr):
+        """右上: アクションバッジ（黄）"""
         bw = max(10, int(sr.width() * 0.28)); bh = max(8, int(sr.height() * 0.28))
         badge_rect = QtCore.QRect(sr.right() - bw + 1, sr.top() - 1, bw, bh)
         painter.save()
@@ -459,17 +553,25 @@ class ImageCanvas(QtWidgets.QLabel):
         painter.drawText(badge_rect, QtCore.Qt.AlignCenter, "⇄")
         painter.restore()
 
+    def _hit_test(self, raw):
+        """クリック判定: セレクターモードでは非表示アイテムを除外する"""
+        for i, r in enumerate(self.registered_items):
+            if self.mode == "selector" and not r.visible:
+                continue
+            if r.rect.contains(raw):
+                return i
+        return -1
+
     def mousePressEvent(self, event):
         mod = event.modifiers(); pos = event.pos()
         raw = pos / self.scale
         is_mod = bool(mod & (QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier))
 
-        # ミドルクリック or Alt+左クリック → パン
         if event.button() == QtCore.Qt.MiddleButton or \
                 (event.button() == QtCore.Qt.LeftButton and mod & QtCore.Qt.AltModifier):
             self.last_pan_pos = event.globalPos(); self.setCursor(QtCore.Qt.ClosedHandCursor); return
 
-        idx = next((i for i, r in enumerate(self.registered_items) if r.rect.contains(raw)), -1)
+        idx = self._hit_test(raw)
 
         # ---- 右クリック ----
         if event.button() == QtCore.Qt.RightButton:
@@ -585,7 +687,6 @@ class MayaPickerEditor(QtWidgets.QWidget):
         self.splitter.addWidget(left_w); self.splitter.addWidget(right_w)
         self.splitter.setSizes([300, 800]); main_layout.addWidget(self.splitter)
 
-        # シグナル接続
         self.canvas.request_deselect.connect(lambda mod: (self.list_widget.clearSelection() if not mod else None))
         self.canvas.region_clicked.connect(self.handle_canvas_region_click)
         self.canvas.region_right_clicked.connect(self.handle_action_execute)
@@ -593,22 +694,19 @@ class MayaPickerEditor(QtWidgets.QWidget):
         self.canvas.file_dropped.connect(self.handle_drop_file)
         self.canvas.pan_requested.connect(self.handle_pan)
 
-    # ---------------------------------------------------------------- #
-    #  アクション実行（右クリック）
-    # ---------------------------------------------------------------- #
+    # ── アクション実行（右クリック） ─────────────────────────────────
 
     def handle_action_execute(self, idx):
-        """右クリックされたリージョンの action を実行する。target は select_names から自動取得。"""
         reg = self.canvas.registered_items[idx]
-        if not reg.has_switch:
-            return
+        if not reg.has_switch: return
         ok, msg = execute_action(reg.action, reg.select_names)
         if not ok and msg:
             QtWidgets.QMessageBox.warning(self, "Action Error", msg)
+        # アクション実行後に表示条件を即時評価して更新
+        evaluate_visibility(self.canvas.registered_items)
+        self.canvas.update()
 
-    # ---------------------------------------------------------------- #
-    #  既存メソッド
-    # ---------------------------------------------------------------- #
+    # ── 既存メソッド ─────────────────────────────────────────────────
 
     def on_list_selection_changed(self):
         self.canvas.selected_indices = {i.row() for i in self.list_widget.selectedIndexes()}
@@ -664,12 +762,13 @@ class MayaPickerEditor(QtWidgets.QWidget):
         names = [n.strip() for n in self.edit_names.text().split(",") if n.strip()] or ["Control"]
         reg = ClickRegion(names, raw, self.last_used_color)
         self.canvas.registered_items.append(reg)
-        self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type, "", None)
+        self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type, "", None, None)
         self.canvas.temp_rect = QtCore.QRect(); self.canvas.update()
 
-    def add_list_item(self, names, rect, color, shape_type, next_json="", action=None):
+    def add_list_item(self, names, rect, color, shape_type,
+                      next_json="", action=None, visible_when=None):
         it = QtWidgets.QListWidgetItem(self.list_widget)
-        w = ListColorItem(names, rect, color, shape_type, next_json, action,
+        w = ListColorItem(names, rect, color, shape_type, next_json, action, visible_when,
                           self.list_widget.count() - 1)
         w.names_changed.connect(lambda i, n: setattr(self.canvas.registered_items[i], 'names', n))
         w.rect_changed.connect(self.handle_rect_sync)
@@ -677,7 +776,7 @@ class MayaPickerEditor(QtWidgets.QWidget):
         w.type_changed.connect(self.handle_type_sync)
         w.next_json_changed.connect(lambda i, p: setattr(self.canvas.registered_items[i], 'next_json', p))
         w.action_changed.connect(lambda i, a: setattr(self.canvas.registered_items[i], 'action', a))
-        # アクションパネルの開閉でリストアイテムの高さを更新
+        w.visible_when_changed.connect(lambda i, v: setattr(self.canvas.registered_items[i], 'visible_when', v))
         w.layout_changed.connect(lambda _i: it.setSizeHint(w.sizeHint()))
         it.setSizeHint(w.sizeHint())
         self.list_widget.addItem(it); self.list_widget.setItemWidget(it, w)
@@ -729,6 +828,14 @@ class MayaPickerEditor(QtWidgets.QWidget):
         for i in range(self.list_widget.count()):
             w = self.list_widget.itemWidget(self.list_widget.item(i))
             if w: w.set_edit_enabled(not checked)
+        if checked:
+            # セレクターモード開始 → 初期状態を即評価
+            evaluate_visibility(self.canvas.registered_items)
+        else:
+            # セットアップモード → 全リージョン visible=True にリセット
+            for reg in self.canvas.registered_items:
+                reg.visible = True
+        self.canvas.update()
 
     def save_json(self):
         p, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save JSON", self.current_json_path, "*.json")
@@ -737,12 +844,13 @@ class MayaPickerEditor(QtWidgets.QWidget):
             for i in self.canvas.registered_items:
                 path = os.path.basename(i.next_json) if i.next_json else ""
                 d = {
-                    "names":      i.names,
-                    "rect":       list(i.rect.getRect()),
-                    "color":      list(i.color.getRgb()),
-                    "shape_type": i.shape_type,
-                    "next_json":  path,
-                    "action":     i.action   # None or dict
+                    "names":        i.names,
+                    "rect":         list(i.rect.getRect()),
+                    "color":        list(i.color.getRgb()),
+                    "shape_type":   i.shape_type,
+                    "next_json":    path,
+                    "action":       i.action,
+                    "visible_when": i.visible_when
                 }
                 lines.append(json.dumps(d, ensure_ascii=False))
             with open(p, 'w', encoding='utf-8') as f:
@@ -761,27 +869,23 @@ class MayaPickerEditor(QtWidgets.QWidget):
                 path = d.get("next_json", "")
                 rel  = os.path.basename(path) if path else ""
                 full = os.path.join(base_dir, rel) if rel else ""
+                names        = d.get("names", [])
+                action       = d.get("action", None)
+                visible_when = d.get("visible_when", None)
 
-                names  = d.get("names", [])
-                action = d.get("action", None)
-
-                # ── 後方互換: 旧 .Switch サフィックス形式を自動変換 ──
+                # 後方互換: 旧 .Switch サフィックス形式を自動変換
                 if action is None:
                     sw = [n for n in names if n.endswith(".Switch")]
                     if sw:
                         obj = sw[0][:-len(".Switch")]
-                        action = {
-                            "type":   "attribute_toggle",
-                            "target": obj,
-                            "attr":   "",   # 旧形式は attr 不明のため空欄
-                            "values": [0, 1]
-                        }
+                        action = {"type": "attribute_toggle", "target": obj, "attr": "", "values": [0, 1]}
                         names = [n[:-len(".Switch")] if n.endswith(".Switch") else n for n in names]
 
                 reg = ClickRegion(names, d["rect"], d["color"],
-                                  d.get("shape_type", "rect"), full, action)
+                                  d.get("shape_type", "rect"), full, action, visible_when)
                 self.canvas.registered_items.append(reg)
-                self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type, rel, reg.action)
+                self.add_list_item(reg.names, reg.rect, reg.color, reg.shape_type,
+                                   rel, reg.action, reg.visible_when)
             self.canvas.update()
 
 

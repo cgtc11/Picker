@@ -12,14 +12,13 @@ def get_maya_main_window():
     return wrapInstance(int(ptr), QtWidgets.QWidget) if ptr else None
 
 # ------------------------------------------------------------------ #
-#  アクション実行
+#  アトリビュート解決
 # ------------------------------------------------------------------ #
 
 def _resolve_attr(node, attr):
     """
     attr をそのまま試し、失敗したら nice name として listAttr でスキャンして
     一致する内部名を返す。どちらでも見つからなければ None。
-    Maya の getAttr/setAttr はスペース入り nice name を直接受け付けないための対処。
     """
     try:
         cmds.getAttr(f"{node}.{attr}")
@@ -39,12 +38,14 @@ def _resolve_attr(node, attr):
         pass
     return None
 
+# ------------------------------------------------------------------ #
+#  アクション実行
+# ------------------------------------------------------------------ #
+
 def execute_action(action, targets):
     """
-    action dict と対象ノードリストを受け取り、処理を実行する。
+    action dict と対象ノードリストを受け取り処理を実行する。
     attr には内部名・nice name どちらを書いても動作する。
-    現在対応:
-        attribute_toggle : targets の各ノードの attr を values[0] ⇄ values[1] でトグル
     """
     if not action:
         return
@@ -66,6 +67,36 @@ def execute_action(action, targets):
                 cmds.setAttr(full, new_val)
             except Exception:
                 pass
+
+# ------------------------------------------------------------------ #
+#  表示条件評価
+# ------------------------------------------------------------------ #
+
+def evaluate_visibility(items):
+    """
+    各リージョンの visible_when 条件を評価し item.visible を更新する。
+    visible_when が None のリージョンは常に visible=True。
+    """
+    for item in items:
+        vw = item.visible_when
+        if not vw:
+            item.visible = True
+            continue
+        target = vw.get("target", "")
+        attr   = vw.get("attr", "")
+        value  = vw.get("value", 0)
+        if not target or not attr:
+            item.visible = True
+            continue
+        resolved = _resolve_attr(target, attr)
+        if resolved is None:
+            item.visible = True
+            continue
+        try:
+            val = cmds.getAttr(f"{target}.{resolved}")
+            item.visible = (abs(float(val) - float(value)) < 0.001)
+        except Exception:
+            item.visible = True
 
 # ------------------------------------------------------------------ #
 #  共通描画関数
@@ -93,7 +124,7 @@ def draw_shape(painter, t, sr, color, is_selected):
         if "up"    in t: pts = [sr.bottomLeft(), sr.bottomRight(), QtCore.QPoint(sr.center().x(), sr.top())]
         elif "down"  in t: pts = [sr.topLeft(),    sr.topRight(),    QtCore.QPoint(sr.center().x(), sr.bottom())]
         elif "left"  in t: pts = [sr.topRight(),   sr.bottomRight(), QtCore.QPoint(sr.left(),        sr.center().y())]
-        elif "right" in t: pts = [sr.topLeft(),     sr.bottomLeft(),  QtCore.QPoint(sr.right(),       sr.center().y())]
+        elif "right" in t: pts = [sr.topLeft(),    sr.bottomLeft(),  QtCore.QPoint(sr.right(),       sr.center().y())]
         poly = QtGui.QPolygon(pts)
         if "_fill" in t: painter.setBrush(brush)
         painter.drawPolygon(poly); painter.setBrush(QtCore.Qt.NoBrush)
@@ -115,13 +146,16 @@ def draw_shape(painter, t, sr, color, is_selected):
 # ------------------------------------------------------------------ #
 
 class ClickRegion:
-    def __init__(self, names, rect_data, color, shape_type="rect", next_json="", action=None):
-        self.names      = names if isinstance(names, list) else [names]
-        self.rect       = QtCore.QRect(*rect_data)
-        self.color      = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
-        self.shape_type = shape_type
-        self.next_json  = next_json
-        self.action     = action  # dict or None
+    def __init__(self, names, rect_data, color, shape_type="rect",
+                 next_json="", action=None, visible_when=None):
+        self.names        = names if isinstance(names, list) else [names]
+        self.rect         = QtCore.QRect(*rect_data)
+        self.color        = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
+        self.shape_type   = shape_type
+        self.next_json    = next_json
+        self.action       = action        # dict or None
+        self.visible_when = visible_when  # dict or None
+        self.visible      = True          # ランタイムフラグ
 
     @property
     def has_switch(self):
@@ -136,7 +170,7 @@ class ClickRegion:
 # ------------------------------------------------------------------ #
 
 class PickerCanvas(QtWidgets.QLabel):
-    pan_requested      = QtCore.Signal(QtCore.QPoint)
+    pan_requested       = QtCore.Signal(QtCore.QPoint)
     json_jump_requested = QtCore.Signal(str)
 
     def __init__(self, parent=None):
@@ -154,8 +188,7 @@ class PickerCanvas(QtWidgets.QLabel):
         self.setStyleSheet("background-color: #1a1a1a; border: None;")
 
     def set_image(self, pixmap):
-        self.pixmap_original = pixmap
-        self.update_canvas_size()
+        self.pixmap_original = pixmap; self.update_canvas_size()
 
     def update_canvas_size(self):
         if self.pixmap_original:
@@ -170,6 +203,9 @@ class PickerCanvas(QtWidgets.QLabel):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing)
         for i, item in enumerate(self.registered_items):
+            # 非表示アイテムはスキップ
+            if not item.visible:
+                continue
             sr = QtCore.QRect(
                 item.rect.x()*self.scale, item.rect.y()*self.scale,
                 item.rect.width()*self.scale, item.rect.height()*self.scale)
@@ -193,69 +229,60 @@ class PickerCanvas(QtWidgets.QLabel):
 
     def wheelEvent(self, event):
         self.scale *= 1.1 if event.angleDelta().y() > 0 else 0.9
-        self.scale = max(0.1, min(self.scale, 10.0))
-        self.update_canvas_size(); self.update()
+        self.scale = max(0.1, min(self.scale, 10.0)); self.update_canvas_size(); self.update()
 
     def mousePressEvent(self, event):
         mod = event.modifiers()
-        # パン
         if event.button() == QtCore.Qt.MouseButton.MiddleButton or \
                 (event.button() == QtCore.Qt.MouseButton.LeftButton and
                  mod & QtCore.Qt.KeyboardModifier.AltModifier):
             self.last_pan_pos = event.globalPosition().toPoint()
-            self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor)
-            return
+            self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor); return
 
         raw_pos = QtCore.QPoint(event.position().x() / self.scale,
                                 event.position().y() / self.scale)
+        # 非表示アイテムをヒット対象から除外
         hit_idx = next((i for i, r in enumerate(self.registered_items)
-                        if r.rect.contains(raw_pos)), -1)
+                        if r.visible and r.rect.contains(raw_pos)), -1)
 
-        # 右クリック
         if event.button() == QtCore.Qt.MouseButton.RightButton:
-            if hit_idx != -1:
+            if hit_idx != -1 and self.registered_items[hit_idx].has_switch:
                 item = self.registered_items[hit_idx]
-                if item.has_switch:
-                    execute_action(item.action, item.select_names)
+                execute_action(item.action, item.select_names)
+                # アクション実行後に表示条件を即時評価して更新
+                evaluate_visibility(self.registered_items)
+                self.update()
             else:
-                # 空白右クリック → スケールリセット
                 self.scale = 1.0; self.update_canvas_size(); self.update()
             return
 
-        # 左クリック
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             if hit_idx != -1:
                 item = self.registered_items[hit_idx]
                 if item.next_json and not (mod & QtCore.Qt.KeyboardModifier.ShiftModifier):
                     self.json_jump_requested.emit(item.next_json); return
             self.origin = event.position().toPoint()
-            self.selection_rect = QtCore.QRect(self.origin, QtCore.QSize())
-            self.is_dragging = False
+            self.selection_rect = QtCore.QRect(self.origin, QtCore.QSize()); self.is_dragging = False
 
     def mouseMoveEvent(self, event):
         if self.last_pan_pos:
             delta = event.globalPosition().toPoint() - self.last_pan_pos
-            self.pan_requested.emit(delta)
-            self.last_pan_pos = event.globalPosition().toPoint()
-            return
+            self.pan_requested.emit(delta); self.last_pan_pos = event.globalPosition().toPoint(); return
         if event.buttons() & QtCore.Qt.MouseButton.LeftButton:
-            if not self.is_dragging and \
-                    (event.position().toPoint() - self.origin).manhattanLength() > 5:
+            if not self.is_dragging and (event.position().toPoint() - self.origin).manhattanLength() > 5:
                 self.is_dragging = True
             if self.is_dragging:
-                self.selection_rect = QtCore.QRect(
-                    self.origin, event.position().toPoint()).normalized()
+                self.selection_rect = QtCore.QRect(self.origin, event.position().toPoint()).normalized()
                 self.update()
 
     def mouseReleaseEvent(self, event):
-        self.last_pan_pos = None
-        self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+        self.last_pan_pos = None; self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             is_shift = (QtWidgets.QApplication.keyboardModifiers() ==
                         QtCore.Qt.KeyboardModifier.ShiftModifier)
             if self.is_dragging:
                 new_sel = {i for i, item in enumerate(self.registered_items)
-                           if self.selection_rect.intersects(QtCore.QRect(
+                           if item.visible and self.selection_rect.intersects(QtCore.QRect(
                                item.rect.x()*self.scale, item.rect.y()*self.scale,
                                item.rect.width()*self.scale, item.rect.height()*self.scale))}
                 self.selected_indices = (self.selected_indices | new_sel) if is_shift else new_sel
@@ -263,7 +290,7 @@ class PickerCanvas(QtWidgets.QLabel):
                 raw_pos = QtCore.QPoint(event.position().x() / self.scale,
                                         event.position().y() / self.scale)
                 hit_idx = next((i for i, r in enumerate(self.registered_items)
-                                if r.rect.contains(raw_pos)), -1)
+                                if r.visible and r.rect.contains(raw_pos)), -1)
                 if hit_idx != -1:
                     if is_shift:
                         if hit_idx in self.selected_indices: self.selected_indices.remove(hit_idx)
@@ -313,8 +340,7 @@ class PickerPlayerMaya(QtWidgets.QWidget):
     def setup_window_icon(self):
         script_dir = os.path.dirname(__file__) if "__file__" in globals() else ""
         icon_path = os.path.join(script_dir, "PickerPlayer.png")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QtGui.QIcon(icon_path))
+        if os.path.exists(icon_path): self.setWindowIcon(QtGui.QIcon(icon_path))
 
     def update_title(self, json_full_path=""):
         def get_stem(p): return os.path.splitext(os.path.basename(p))[0] if p else ""
@@ -344,10 +370,8 @@ class PickerPlayerMaya(QtWidgets.QWidget):
         if ext in (".png", ".jpg", ".jpeg"):
             pix = QtGui.QPixmap(path)
             if not pix.isNull():
-                self.current_image_name = os.path.basename(path)
-                self.canvas.set_image(pix)
-                if self.first_load:
-                    self.resize(pix.width(), pix.height()); self.first_load = False
+                self.current_image_name = os.path.basename(path); self.canvas.set_image(pix)
+                if self.first_load: self.resize(pix.width(), pix.height()); self.first_load = False
                 json_path = os.path.splitext(path)[0] + ".json"
                 if os.path.exists(json_path): self.load_json(json_path)
                 else: self.update_title()
@@ -358,31 +382,28 @@ class PickerPlayerMaya(QtWidgets.QWidget):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             self.current_json_path = path
-            self.canvas.registered_items = []
-            self.canvas.selected_indices.clear()
+            self.canvas.registered_items = []; self.canvas.selected_indices.clear()
             for d in data:
-                names  = d.get("names", [d.get("name", "Unknown")])
-                action = d.get("action", None)
+                names        = d.get("names", [d.get("name", "Unknown")])
+                action       = d.get("action", None)
+                visible_when = d.get("visible_when", None)
 
                 # 後方互換: 旧 .Switch サフィックス形式を自動変換
                 if action is None:
                     sw = [n for n in names if n.endswith(".Switch")]
                     if sw:
                         obj = sw[0][:-len(".Switch")]
-                        action = {
-                            "type":   "attribute_toggle",
-                            "target": obj,
-                            "attr":   "",
-                            "values": [0, 1]
-                        }
-                        names = [n[:-len(".Switch")] if n.endswith(".Switch") else n
-                                 for n in names]
+                        action = {"type": "attribute_toggle", "target": obj, "attr": "", "values": [0, 1]}
+                        names = [n[:-len(".Switch")] if n.endswith(".Switch") else n for n in names]
 
                 self.canvas.registered_items.append(ClickRegion(
                     names, d["rect"], d.get("color", [0, 255, 0]),
-                    d.get("shape_type", "rect"), d.get("next_json", ""), action
+                    d.get("shape_type", "rect"), d.get("next_json", ""),
+                    action, visible_when
                 ))
-            self.update_title(path); self.canvas.update()
+            self.update_title(path)
+            evaluate_visibility(self.canvas.registered_items)
+            self.canvas.update()
         except Exception:
             pass
 

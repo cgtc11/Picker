@@ -10,58 +10,62 @@ from pymxs import runtime as mxs
 # ------------------------------------------------------------------ #
 
 def _resolve_attr(obj_name, attr):
-    """
-    3ds Max ノードの attr を解決する。
-    mxs.getProperty → getattr の順に試み、成功すれば attr を返す。見つからなければ None。
-    """
+    """mxs.getProperty → getattr の順に試みる。見つからなければ None。"""
     node = mxs.getNodeByName(obj_name)
-    if node is None:
-        return None
+    if node is None: return None
     try:
-        mxs.getProperty(node, mxs.Name(attr))
-        return attr
-    except Exception:
-        pass
+        mxs.getProperty(node, mxs.Name(attr)); return attr
+    except Exception: pass
     try:
-        getattr(node, attr)
-        return attr
-    except Exception:
-        pass
+        getattr(node, attr); return attr
+    except Exception: pass
     return None
 
 def execute_action(action, targets):
-    """
-    action dict と対象ノード名リストを受け取り処理を実行する。
-    attr には 3ds Max のプロパティ名（カスタムアトリビュート名など）を指定する。
-    現在対応:
-        attribute_toggle : targets の各ノードの attr を values[0] ⇄ values[1] でトグル
-    """
-    if not action:
-        return
+    if not action: return
     atype = action.get("type", "attribute_toggle")
     if atype == "attribute_toggle":
         attr   = action.get("attr", "")
         values = action.get("values", [0, 1])
-        if not attr:
-            return
+        if not attr: return
         for target in targets:
             resolved = _resolve_attr(target, attr)
-            if resolved is None:
-                continue
+            if resolved is None: continue
             node = mxs.getNodeByName(target)
             try:
-                try:
-                    val = mxs.getProperty(node, mxs.Name(resolved))
-                except Exception:
-                    val = getattr(node, resolved)
+                try:    val = mxs.getProperty(node, mxs.Name(resolved))
+                except: val = getattr(node, resolved)
                 mid = (float(values[0]) + float(values[1])) / 2.0
                 new_val = values[0] if float(val) >= mid else values[1]
-                try:
-                    mxs.setProperty(node, mxs.Name(resolved), new_val)
-                except Exception:
-                    setattr(node, resolved, new_val)
-            except Exception:
-                pass
+                try:    mxs.setProperty(node, mxs.Name(resolved), new_val)
+                except: setattr(node, resolved, new_val)
+            except Exception: pass
+
+# ------------------------------------------------------------------ #
+#  表示条件評価
+# ------------------------------------------------------------------ #
+
+def evaluate_visibility(items):
+    """visible_when 条件を評価して item.visible を更新する。"""
+    for item in items:
+        vw = item.visible_when
+        if not vw:
+            item.visible = True; continue
+        target = vw.get("target", ""); attr = vw.get("attr", ""); value = vw.get("value", 0)
+        if not target or not attr:
+            item.visible = True; continue
+        resolved = _resolve_attr(target, attr)
+        if resolved is None:
+            item.visible = True; continue
+        node = mxs.getNodeByName(target)
+        if node is None:
+            item.visible = True; continue
+        try:
+            try:    val = mxs.getProperty(node, mxs.Name(resolved))
+            except: val = getattr(node, resolved)
+            item.visible = (abs(float(val) - float(value)) < 0.001)
+        except Exception:
+            item.visible = True
 
 # ------------------------------------------------------------------ #
 #  共通描画関数
@@ -105,21 +109,21 @@ def draw_shape(painter, t, sr, color, is_selected):
 # ------------------------------------------------------------------ #
 
 class ClickRegion:
-    def __init__(self, names, rect_data, color, shape_type="rect", next_json="", action=None):
-        self.names      = names if isinstance(names, list) else [names]
-        self.rect       = QtCore.QRect(*rect_data)
-        self.color      = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
-        self.shape_type = shape_type
-        self.next_json  = next_json
-        self.action     = action  # dict or None
+    def __init__(self, names, rect_data, color, shape_type="rect",
+                 next_json="", action=None, visible_when=None):
+        self.names        = names if isinstance(names, list) else [names]
+        self.rect         = QtCore.QRect(*rect_data)
+        self.color        = QtGui.QColor(*color) if isinstance(color, list) else QtGui.QColor(color)
+        self.shape_type   = shape_type
+        self.next_json    = next_json
+        self.action       = action
+        self.visible_when = visible_when
+        self.visible      = True
 
     @property
-    def has_switch(self):
-        return self.action is not None
-
+    def has_switch(self): return self.action is not None
     @property
-    def select_names(self):
-        return list(self.names)
+    def select_names(self): return list(self.names)
 
 # ------------------------------------------------------------------ #
 #  PickerCanvas
@@ -131,14 +135,9 @@ class PickerCanvas(QtWidgets.QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.registered_items = []
-        self.selected_indices = set()
-        self.origin           = QtCore.QPoint()
-        self.selection_rect   = QtCore.QRect()
-        self.is_dragging      = False
-        self.scale            = 1.0
-        self.pixmap_original  = None
-        self.last_pan_pos     = None
+        self.registered_items = []; self.selected_indices = set()
+        self.origin = QtCore.QPoint(); self.selection_rect = QtCore.QRect()
+        self.is_dragging = False; self.scale = 1.0; self.pixmap_original = None; self.last_pan_pos = None
         self.setMouseTracking(True)
         self.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
         self.setStyleSheet("background-color: #1a1a1a; border: None;")
@@ -158,11 +157,11 @@ class PickerCanvas(QtWidgets.QLabel):
         super().paintEvent(event)
         painter = QtGui.QPainter(self); painter.setRenderHint(QtGui.QPainter.Antialiasing)
         for i, item in enumerate(self.registered_items):
+            if not item.visible: continue
             sr = QtCore.QRect(item.rect.x()*self.scale, item.rect.y()*self.scale,
                               item.rect.width()*self.scale, item.rect.height()*self.scale)
             draw_shape(painter, item.shape_type, sr, item.color, i in self.selected_indices)
-            if item.has_switch:
-                self._draw_switch_badge(painter, sr)
+            if item.has_switch: self._draw_switch_badge(painter, sr)
         if self.is_dragging and not self.selection_rect.isNull():
             painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.white, 1, QtCore.Qt.PenStyle.DashLine))
             painter.drawRect(self.selection_rect)
@@ -183,7 +182,6 @@ class PickerCanvas(QtWidgets.QLabel):
         self.scale = max(0.1, min(self.scale, 10.0)); self.update_canvas_size(); self.update()
 
     def mousePressEvent(self, event):
-        # パン（中ボタン or Alt+左ボタン）
         if event.button() == QtCore.Qt.MouseButton.MiddleButton or \
            (event.button() == QtCore.Qt.MouseButton.LeftButton and
             event.modifiers() & QtCore.Qt.KeyboardModifier.AltModifier):
@@ -193,18 +191,20 @@ class PickerCanvas(QtWidgets.QLabel):
         raw_pos = QtCore.QPoint(event.position().x() / self.scale,
                                 event.position().y() / self.scale)
         hit_idx = next((i for i, r in enumerate(self.registered_items)
-                        if r.rect.contains(raw_pos)), -1)
+                        if r.visible and r.rect.contains(raw_pos)), -1)
 
         # 右クリック: アクション実行 / 空白ならズームリセット
         if event.button() == QtCore.Qt.MouseButton.RightButton:
             if hit_idx != -1 and self.registered_items[hit_idx].has_switch:
                 item = self.registered_items[hit_idx]
                 execute_action(item.action, item.select_names)
+                # アクション実行後に表示条件を即時評価
+                evaluate_visibility(self.registered_items)
+                self.update()
             else:
                 self.scale = 1.0; self.update_canvas_size(); self.update()
             return
 
-        # 左クリック
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             if hit_idx != -1:
                 item = self.registered_items[hit_idx]
@@ -227,12 +227,11 @@ class PickerCanvas(QtWidgets.QLabel):
     def mouseReleaseEvent(self, event):
         self.last_pan_pos = None; self.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            # 3ds Max の慣習に合わせ Ctrl キーで追加選択
             is_ctrl = (QtWidgets.QApplication.keyboardModifiers() ==
                        QtCore.Qt.KeyboardModifier.ControlModifier)
             if self.is_dragging:
                 new_sel = {i for i, item in enumerate(self.registered_items)
-                           if self.selection_rect.intersects(QtCore.QRect(
+                           if item.visible and self.selection_rect.intersects(QtCore.QRect(
                                item.rect.x()*self.scale, item.rect.y()*self.scale,
                                item.rect.width()*self.scale, item.rect.height()*self.scale))}
                 self.selected_indices = (self.selected_indices | new_sel) if is_ctrl else new_sel
@@ -240,7 +239,7 @@ class PickerCanvas(QtWidgets.QLabel):
                 raw_pos = QtCore.QPoint(event.position().x() / self.scale,
                                         event.position().y() / self.scale)
                 hit_idx = next((i for i, r in enumerate(self.registered_items)
-                                if r.rect.contains(raw_pos)), -1)
+                                if r.visible and r.rect.contains(raw_pos)), -1)
                 if hit_idx != -1:
                     if is_ctrl:
                         if hit_idx in self.selected_indices: self.selected_indices.remove(hit_idx)
@@ -331,13 +330,17 @@ class PickerPlayer(QtWidgets.QWidget):
             self.current_json_path = path
             self.canvas.registered_items = []; self.canvas.selected_indices.clear()
             for d in data:
-                names  = d.get("names", [d.get("name", "Unknown")])
-                action = d.get("action", None)
+                names        = d.get("names", [d.get("name", "Unknown")])
+                action       = d.get("action", None)
+                visible_when = d.get("visible_when", None)
                 self.canvas.registered_items.append(ClickRegion(
                     names, d["rect"], d.get("color", [0, 255, 0]),
-                    d.get("shape_type", "rect"), d.get("next_json", ""), action
+                    d.get("shape_type", "rect"), d.get("next_json", ""), action, visible_when
                 ))
-            self.update_title(path); self.canvas.update()
+            self.update_title(path)
+            # ロード後に初期状態を評価
+            evaluate_visibility(self.canvas.registered_items)
+            self.canvas.update()
         except Exception: pass
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ _ScriptInstall.ms　をウインドウ内にドラッグandドロップ
 ------------------------------------------
 VerUp更新
 ------------------------------------------
-C:\Users\onishi\AppData\Local\Autodesk\3dsMax\2025 - 64bit\JPN\scripts
+C:\Users\〇〇〇〇\AppData\Local\Autodesk\3dsMax\20〇〇 - 64bit\JPN\scripts
 PickerEditor_MAX.py
 PickerPlayer_MAX.py
 ここを直接上書きすれば即反応

@@ -123,6 +123,8 @@ class ClickRegion:
     @property
     def has_switch(self): return self.action is not None
     @property
+    def has_visibility(self): return self.visible_when is not None
+    @property
     def select_names(self): return list(self.names)
 
 # ------------------------------------------------------------------ #

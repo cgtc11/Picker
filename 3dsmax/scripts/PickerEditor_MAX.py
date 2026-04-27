@@ -11,8 +11,14 @@ STYLESHEET = """
     QGroupBox { border: 1px solid #3a3a3a; margin-top: 15px; padding-top: 10px; font-weight: bold; }
     QPushButton { background-color: #3f3f3f; border: 1px solid #555; border-radius: 2px; padding: 2px; color: #ffffff; }
     QPushButton:hover { background-color: #4f4f4f; }
+    QPushButton:disabled { background-color: #333; border-color: #444; color: #555; }
     QLineEdit { background-color: #1a1a1a; color: #ffffff; border: 1px solid #333; padding: 1px; }
+    QLineEdit:disabled { background-color: #222; color: #555; border-color: #2a2a2a; }
     QComboBox { background-color: #1a1a1a; color: #ffffff; border: 1px solid #333; }
+    QComboBox:disabled { background-color: #222; color: #555; border-color: #2a2a2a; }
+    QSpinBox { background-color: #1a1a1a; color: #ffffff; border: 1px solid #333; }
+    QSpinBox:disabled { background-color: #222; color: #555; border-color: #2a2a2a; }
+    QLabel:disabled { color: #555; }
     QListWidget { background-color: #1a1a1a; border: 1px solid #333; outline: none; }
     QListWidget::item:selected { background-color: #3d5a73; }
     QScrollArea { border: 1px solid #333; background-color: #1a1a1a; }
@@ -133,7 +139,7 @@ def draw_shape(painter, t, sr, color, is_selected=False):
 def create_shape_icon(shape_type, color):
     pixmap = QtGui.QPixmap(16, 16); pixmap.fill(QtCore.Qt.transparent)
     painter = QtGui.QPainter(pixmap); painter.setRenderHint(QtGui.QPainter.Antialiasing)
-    draw_shape(painter, shape_type, QtCore.QRect(1, 1, 14, 14), QtGui.QColor(color))
+    draw_shape(painter, shape_type, QtCore.QRect(1, 1, 14, 14), QtGui.QColor(color), False)
     painter.end(); return QtGui.QIcon(pixmap)
 
 # ------------------------------------------------------------------ #
@@ -394,6 +400,7 @@ class ListColorItem(QtWidgets.QWidget):
     def set_edit_enabled(self, e):
         self.names_edit.setEnabled(e); self.btn_path.setEnabled(e)
         self.type_combo.setEnabled(e); self.color_btn.setEnabled(e)
+        self.btn_action_toggle.setEnabled(e); self.btn_vis_toggle.setEnabled(e)
         for sb in self.spins.values(): sb.setEnabled(e)
         for lb in self.labels: lb.setEnabled(e)
         for w in (self.action_attr_edit, self.action_val0_edit, self.action_val1_edit,
@@ -741,7 +748,8 @@ class PickerEditor(QtWidgets.QWidget):
         s = self.canvas.scale; r = self.canvas.temp_rect
         raw = [int(r.x()/s), int(r.y()/s), int(r.width()/s), int(r.height()/s)] if not r.isNull() else [10, 10, 40, 40]
         reg = ClickRegion(names, raw, self.last_used_color)
-        self.canvas.registered_items.append(reg); self.add_list_item(reg)
+        self.canvas.registered_items.append(reg)
+        self.add_list_item(reg)
         self.canvas.temp_rect = QtCore.QRect(); self.canvas.update()
 
     def add_list_item(self, reg):

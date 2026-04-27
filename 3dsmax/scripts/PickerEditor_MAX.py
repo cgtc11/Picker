@@ -391,6 +391,15 @@ class ListColorItem(QtWidgets.QWidget):
         c = QtWidgets.QColorDialog.getColor(self.current_color, self)
         if c.isValid(): self.color_changed.emit(self, c)
 
+    def set_edit_enabled(self, e):
+        self.names_edit.setEnabled(e); self.btn_path.setEnabled(e)
+        self.type_combo.setEnabled(e); self.color_btn.setEnabled(e)
+        for sb in self.spins.values(): sb.setEnabled(e)
+        for lb in self.labels: lb.setEnabled(e)
+        for w in (self.action_attr_edit, self.action_val0_edit, self.action_val1_edit,
+                  self.vis_target_edit, self.vis_attr_edit, self.vis_value_edit):
+            w.setEnabled(e)
+
 # ------------------------------------------------------------------ #
 #  ImageCanvas
 # ------------------------------------------------------------------ #
@@ -458,7 +467,11 @@ class ImageCanvas(QtWidgets.QLabel):
         return -1
 
     def mousePressEvent(self, event):
-        mod = event.modifiers(); pos = event.position().toPoint(); raw = pos / self.scale
+        mod = event.modifiers()
+        # raw は常に整数 QPoint に統一（QPointF のまま渡すと QRect.contains がクラッシュする）
+        raw = QtCore.QPoint(int(event.position().x() / self.scale),
+                            int(event.position().y() / self.scale))
+        pos = event.position().toPoint()
         is_mod = bool(mod & (QtCore.Qt.ControlModifier | QtCore.Qt.ShiftModifier))
         if event.button() == QtCore.Qt.MiddleButton or (event.button() == QtCore.Qt.LeftButton and mod & QtCore.Qt.AltModifier):
             self.last_pan_pos = event.globalPosition().toPoint(); self.setCursor(QtCore.Qt.ClosedHandCursor); return
@@ -474,20 +487,36 @@ class ImageCanvas(QtWidgets.QLabel):
             if self.mode == "setup" and not is_mod:
                 if hit not in self.selected_indices: self.region_clicked.emit(hit, False)
                 self.is_dragging = True; self.drag_last_raw = raw; self.setCursor(QtCore.Qt.SizeAllCursor)
-            else: self.region_clicked.emit(hit, is_mod)
+            else:
+                self.region_clicked.emit(hit, is_mod)
+                # セレクターモード: MAX オブジェクトを選択
+                if self.mode == "selector":
+                    sel_names = self.registered_items[hit].select_names
+                    nodes = [mxs.getNodeByName(n) for n in sel_names]
+                    nodes = [n for n in nodes if n]
+                    if nodes:
+                        if is_mod: mxs.selectMore(nodes)
+                        else: mxs.select(nodes)
+                    elif not is_mod:
+                        mxs.deselect(mxs.selection)
         else:
             if self.mode == "setup": self.start_pos = pos; self.temp_rect = QtCore.QRect()
             self.request_deselect.emit(is_mod)
+            if self.mode == "selector" and not is_mod:
+                mxs.deselect(mxs.selection)
 
     def mouseMoveEvent(self, event):
         if self.last_pan_pos:
             delta = event.globalPosition().toPoint() - self.last_pan_pos
             self.pan_requested.emit(delta); self.last_pan_pos = event.globalPosition().toPoint(); return
         if self.is_dragging:
-            raw = event.position().toPoint() / self.scale; delta = raw - self.drag_last_raw
-            if int(delta.x()) != 0 or int(delta.y()) != 0:
-                self.multi_region_moved.emit(list(self.selected_indices), int(delta.x()), int(delta.y()))
-                self.drag_last_raw += QtCore.QPoint(int(delta.x()), int(delta.y()))
+            raw = QtCore.QPoint(int(event.position().x() / self.scale),
+                                int(event.position().y() / self.scale))
+            dx = raw.x() - self.drag_last_raw.x()
+            dy = raw.y() - self.drag_last_raw.y()
+            if dx != 0 or dy != 0:
+                self.multi_region_moved.emit(list(self.selected_indices), dx, dy)
+                self.drag_last_raw = raw
         elif self.start_pos:
             self.temp_rect = QtCore.QRect(self.start_pos, event.position().toPoint()).normalized(); self.update()
 
@@ -740,7 +769,7 @@ class PickerEditor(QtWidgets.QWidget):
         self.canvas.mode = "selector" if checked else "setup"; self.setup_group.setEnabled(not checked)
         for i in range(self.list_widget.count()):
             w = self.list_widget.itemWidget(self.list_widget.item(i))
-            if w: w.setEnabled(not checked)
+            if w: w.set_edit_enabled(not checked)
         if checked:
             evaluate_visibility(self.canvas.registered_items)
         else:

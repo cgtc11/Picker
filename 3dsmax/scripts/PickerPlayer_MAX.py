@@ -188,8 +188,8 @@ class PickerCanvas(QtWidgets.QLabel):
             self.last_pan_pos = event.globalPosition().toPoint()
             self.setCursor(QtCore.Qt.CursorShape.ClosedHandCursor); return
 
-        raw_pos = QtCore.QPoint(event.position().x() / self.scale,
-                                event.position().y() / self.scale)
+        raw_pos = QtCore.QPoint(int(event.position().x() / self.scale),
+                                int(event.position().y() / self.scale))
         hit_idx = next((i for i, r in enumerate(self.registered_items)
                         if r.visible and r.rect.contains(raw_pos)), -1)
 
@@ -236,8 +236,8 @@ class PickerCanvas(QtWidgets.QLabel):
                                item.rect.width()*self.scale, item.rect.height()*self.scale))}
                 self.selected_indices = (self.selected_indices | new_sel) if is_ctrl else new_sel
             else:
-                raw_pos = QtCore.QPoint(event.position().x() / self.scale,
-                                        event.position().y() / self.scale)
+                raw_pos = QtCore.QPoint(int(event.position().x() / self.scale),
+                                        int(event.position().y() / self.scale))
                 hit_idx = next((i for i, r in enumerate(self.registered_items)
                                 if r.visible and r.rect.contains(raw_pos)), -1)
                 if hit_idx != -1:

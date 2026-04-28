@@ -413,11 +413,5 @@ class PickerPlayerMaya(QtWidgets.QWidget):
 # ------------------------------------------------------------------ #
 
 if __name__ == "__main__":
-    for w in QtWidgets.QApplication.topLevelWidgets():
-        try:
-            if "Maya Picker" in w.windowTitle() or " | " in w.windowTitle():
-                w.close(); w.deleteLater()
-        except Exception:
-            pass
     ui = PickerPlayerMaya()
     ui.show()

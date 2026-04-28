@@ -346,9 +346,4 @@ class PickerPlayer(QtWidgets.QWidget):
         except Exception: pass
 
 if __name__ == "__main__":
-    for w in QtWidgets.QApplication.topLevelWidgets():
-        try:
-            if " | " in w.windowTitle() or w.windowTitle() == "Picker":
-                w.close(); w.deleteLater()
-        except: pass
     ui = PickerPlayer(); ui.show()
